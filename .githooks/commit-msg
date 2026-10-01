@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Enforce Conventional Commits and a 72-char line limit (vim gitcommit
+# textwidth, so `gq` in vim wraps to the same width).
+set -euo pipefail
+max=72
+types='feat|fix|docs|chore|refactor|test|perf|build|ci|style|revert'
+msg=$(grep -v '^#' "$1")
+subject=$(printf '%s\n' "$msg" | head -n1)
+
+if ! printf '%s' "$subject" | grep -Eq "^($types)(\([a-z0-9-]+\))?!?: [^ ].*[^.]$"; then
+  echo "commit-msg: subject must be '<type>(scope)?: summary' (no trailing period)" >&2
+  echo "  types: ${types//|/, }" >&2
+  echo "  got:   $subject" >&2
+  exit 1
+fi
+if [ "$(printf '%s\n' "$msg" | sed -n 2p)" != "" ]; then
+  echo "commit-msg: line 2 must be blank" >&2
+  exit 1
+fi
+# URLs and trailers (Key: value) are exempt from the length limit.
+bad=$(printf '%s\n' "$msg" | grep -nEv '^[A-Za-z-]+: |https?://' \
+  | awk -F: -v m=$max '{ l=$0; sub(/^[0-9]+:/, "", l); if (length(l) > m) print $1 }' || true)
+if [ -n "$bad" ]; then
+  echo "commit-msg: lines over $max chars: $bad (wrap with gq in vim)" >&2
+  exit 1
+fi
