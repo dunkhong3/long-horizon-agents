@@ -1,0 +1,137 @@
+"""What every agent shares: its per-attempt context and the fake model.
+
+The agent loop, tool calling and output validation are real Pydantic AI.
+Only the "brain" is scripted: each agent supplies a `policy`, a plain
+function that looks at the ContextPacket and the tool results so far and
+decides the next tool call or the final answer, the same way an LLM would.
+"""
+
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
+from uuid import UUID
+
+from pydantic import BaseModel
+from pydantic_ai import Agent
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+)
+from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+from lha.config import MODEL_ERROR_RATE
+from lha.faults import roll
+from lha.schemas.context import ContextPacket
+from lha.tools import ToolBox
+
+
+@dataclass
+class AgentContext:
+    """Everything one attempt of one task needs."""
+
+    seed: int
+    task_id: UUID
+    task_key: str
+    task_type: str
+    attempt: int
+    packet: ContextPacket
+    tools: ToolBox
+    log: Callable[[str, dict[str, Any]], Awaitable[UUID]]
+
+    @property
+    def input(self) -> dict[str, Any]:
+        return self.packet.pinned.input
+
+
+@dataclass
+class Call:
+    """The model decides to call a tool."""
+
+    tool: str
+    args: dict[str, Any]
+
+
+@dataclass
+class Final:
+    """The model gives its final, structured answer."""
+
+    output: dict[str, Any]
+
+
+# policy(packet, tool_results) -> next decision. tool_results is the list of
+# (tool name, returned data) so far in this attempt, in order.
+Policy = Callable[[ContextPacket, list[tuple[str, Any]]], Call | Final]
+# fabricate(output) -> a plausible-looking but wrong output, or None.
+Fabricate = Callable[[dict[str, Any]], dict[str, Any] | None]
+
+
+def tool_results(messages: list[ModelMessage]) -> list[tuple[str, Any]]:
+    return [
+        (part.tool_name, part.content)
+        for msg in messages
+        if isinstance(msg, ModelRequest)
+        for part in msg.parts
+        if isinstance(part, ToolReturnPart)
+    ]
+
+
+def scripted_model(ctx: AgentContext, policy: Policy, fabricate: Fabricate) -> FunctionModel:
+    """Wrap a policy as a Pydantic AI model, with seeded "model errors".
+
+    A small, seeded share of final answers is corrupted on purpose, to prove
+    that bad output never reaches the shared state:
+    - malformed: breaks the output schema, so Pydantic AI rejects it;
+    - fabricated: valid schema, wrong content (a made-up number or host),
+      so only the coordinator's source check can catch it.
+    """
+
+    async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        decision = policy(ctx.packet, tool_results(messages))
+        corrupted = None
+        if isinstance(decision, Final):
+            output = decision.output
+            r = roll(ctx.seed, ctx.task_key, ctx.attempt, "model")
+            if r < MODEL_ERROR_RATE / 2:
+                output, corrupted = _malformed(output), "malformed"
+            elif r < MODEL_ERROR_RATE:
+                fake = fabricate(output)
+                output, corrupted = (fake, "fabricated") if fake else (_malformed(output), "malformed")
+            part = ToolCallPart(info.output_tools[0].name, output)
+            summary = {"final": True}
+        else:
+            part = ToolCallPart(decision.tool, decision.args)
+            summary = {"tool": decision.tool, "args": decision.args}
+        await ctx.log("model_call", {**summary, "corrupted": corrupted})
+        return ModelResponse(parts=[part])
+
+    return FunctionModel(respond)
+
+
+def _malformed(output: dict[str, Any]) -> dict[str, Any]:
+    """Drop the first field: the output no longer matches its schema."""
+    return dict(list(output.items())[1:])
+
+
+async def run_agent(
+    ctx: AgentContext,
+    output_type: type[BaseModel],
+    policy: Policy,
+    fabricate: Fabricate,
+    tools: list[Callable[..., Awaitable[Any]]] = (),
+) -> BaseModel:
+    """One attempt: run the agent loop until it produces a final answer.
+
+    The model only ever sees the ContextPacket (as the user prompt) and the
+    results of its own tool calls in this attempt.
+    """
+    agent = Agent(
+        scripted_model(ctx, policy, fabricate),
+        output_type=output_type,
+        retries=0,  # an invalid output fails the attempt; the coordinator retries
+        tools=list(tools),
+    )
+    result = await agent.run(ctx.packet.model_dump_json())
+    return result.output
