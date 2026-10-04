@@ -9,8 +9,8 @@ things.
        - error or invalid output  -> retry (same row, attempt + 1) or fail
        - valid                    -> check every fact against its source,
                                      write facts, create follow-up tasks
-  3. checks the goal: a verified drift -> create the report task
-  4. stops when the report is accepted (or the run is out of budget)
+  3. checks the goal (or the budget): if met or out -> create the report task
+  4. stops when the report is accepted (a partial one if the budget ran out)
 
 Workers propose and the coordinator decides. It is the only writer of facts
 and of the plan, so there is a single source of truth.

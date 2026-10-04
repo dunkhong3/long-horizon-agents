@@ -184,7 +184,7 @@ def print_score(score: Score, sid: UUID, elapsed: float) -> Path:
     print(summary.strip())
     print()
     for name, ok in score.checks:
-        print(f"  [{'x' if ok else ' '}] {name}")
+        print(f"  {'✓' if ok else '✗'} {name}")
     s = score.stats
     print()
     print(

@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: lha
       POSTGRES_DB: lha
     ports:
-      - "5432:5432"
+      - "5433:5432"  # 5433 on the host, so it never clashes with another local Postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U lha"]
       interval: 2s

@@ -4,7 +4,7 @@
 
 ## What this is
 
-This project is a small system where several agents, each running as its own process, work towards one goal over hundreds of dependent steps without losing track of what they are doing, and the only thing they share is a Postgres database. Each step gets a small, fresh context instead of the whole history, faults are injected randomly on purpose, and the system has to find its way back from all of them. The full design is in [docs/design.md](docs/design.md), and the decisions, the parts we cut and what comes next are in [NOTES.md](NOTES.md).
+This project is a small system where several agents, each running as its own process, work towards one goal over hundreds of dependent steps without losing track of what they are doing, and the only thing they share is a Postgres database. Each attempt at a task gets a small, fresh context instead of the whole history, faults are injected randomly on purpose, and the system has to find its way back from all of them. The full design is in [docs/design.md](docs/design.md), and the decisions, the parts we cut and what comes next are in [NOTES.md](NOTES.md).
 
 ## The task
 
@@ -27,7 +27,7 @@ host-4  └─ cache: 1 replica           ✗ registry says 3 → this is the dr
 report: "cache on host-4 runs 1 replica; the registry expects 3"
 ```
 
-The agents start knowing only `host-1`, `host-2` and `host-3`, and the example is simplified. A real run has 20 hosts, about 35 services, 3 decoys (healthy services whose first read is stale, so they look broken until they are read again) and a dead reference, which is a document that names a host that doesn't exist. The drift sits 5–6 document hops away from the start (`lha/world/model.py`, lines 77–95), so a run takes about 250 steps, and timeouts, 500 errors, empty responses, made-up model output and crashes all happen along the way. Every run is scored against the planted answer as PASS or FAIL (`lha/scoring.py`, lines 30–52).
+The agents start knowing only `host-1`, `host-2` and `host-3`, and the example is simplified. A real run has 20 hosts, about 40 services (between 30 and 50), 3 decoys (healthy services whose first read is stale, so they look broken until they are read again) and a dead reference, which is a document that names a host that doesn't exist. The drift sits 5–6 document hops away from the start (`lha/world/model.py`, lines 77–95), so a run takes roughly 225–300 steps at the default fault rate (and up to about 360 at a 45% fault rate), and timeouts, 500 errors, empty responses and made-up model output all happen along the way, plus a crash of every process when `--kill-at` is used. Every run is scored against the planted answer as PASS or FAIL (`lha/scoring.py`, lines 30–52).
 
 ## How it is built
 
@@ -41,11 +41,16 @@ The agents start knowing only `host-1`, `host-2` and `host-3`, and the example i
                └──── Mock network (FastAPI, randomly seeded faults)
 ```
 
-The two things this project goes deep on are state and context management, and failure detection and recovery. For context, every model call gets a fresh `ContextPacket`, which is a small bundle with the goal, the task and only the facts that matter for it, built from the database (`lha/context.py`, lines 81–94), and the raw log never goes into a prompt. For recovery, tool failures are never silent (`lha/tools.py`, lines 91–120), the tasks of crashed workers are handed out again, claims are verified before they count, and failed work is retried or rerouted and never passed downstream. Workers never write facts themselves, because the coordinator checks every claimed fact against the raw tool response it cites (`lha/coordinator.py`, lines 167–185), so a made-up number or host is rejected. The whole run can be killed at any point and `--resume` carries on from the database, and no API keys are needed because the agents use deterministic fake models through Pydantic AI's `FunctionModel` (`lha/agents/base.py`, lines 82–111).
+The two things this project goes deep on are state and context management, and failure detection and recovery. For context, every attempt at a task gets a fresh `ContextPacket`, which is a small bundle with the goal, the task and only the facts that matter for it, built from the database (`lha/context.py`, lines 81–94), and within that attempt the model sees only the packet and the results of its own tool calls, so the raw log never goes into a prompt. For recovery, tool failures are never silent (`lha/tools.py`, lines 91–120), the tasks of crashed workers are handed out again, claims are verified before they count, and failed work is retried or rerouted and never passed downstream. Workers never write facts themselves, because the coordinator checks every claimed fact against the raw tool response it cites (`lha/coordinator.py`, lines 167–185), so a made-up number or host is rejected. The whole run can be killed at any point and `--resume` carries on from the database, and no API keys are needed because the agents use deterministic fake models through Pydantic AI's `FunctionModel` (`lha/agents/base.py`, lines 82–111).
 
 ## How to run it
 
-It needs Python 3.11 or newer, [uv](https://docs.astral.sh/uv/), [just](https://github.com/casey/just), and Postgres 16, either through Docker or a local install, with `DATABASE_URL` pointing at it (the default is `postgresql+asyncpg://lha:lha@localhost:5432/lha`).
+It needs Python 3.11 or newer, [uv](https://docs.astral.sh/uv/), [just](https://github.com/casey/just), and Postgres 16. `just db-up` starts Postgres in Docker on port 5433, not the usual 5432, so it doesn't clash with another Postgres already running on the machine, and the default `DATABASE_URL` is `postgresql+asyncpg://lha:lha@localhost:5433/lha` to match (`docker-compose.yml`; `lha/db/__init__.py`, line 5). To use a Postgres you already have instead, create a user and a database in it and point `DATABASE_URL` at them, for example in a `.env` file, which `just` loads automatically.
+
+```bash
+psql -c "CREATE USER lha WITH PASSWORD 'lha';" -c "CREATE DATABASE lha OWNER lha;"
+echo 'DATABASE_URL=postgresql+asyncpg://lha:lha@localhost:5432/lha' > .env
+```
 
 ```bash
 just install && just db-up
@@ -54,10 +59,10 @@ just start --seed 42                  # full run, prints PASS/FAIL (~10 s)
 just start --seed 42 --chaos 0.3      # more faults
 just start --seed 7 --kill-at 120     # crash every process after step 120...
 just start --resume                   # ...and resume from Postgres
-just demo                             # all of the above in one go
+just demo                             # a full run, then a crash at step 120 and a resume
 ```
 
-Without `just`, the same run is `uv sync && uv run python -m lha.run --seed 42`. A step is one model call or one tool call, and `--seed` fixes both the network and the fault pattern, so the same seed gives the same faults and the same result. Each run writes `runs/<session>/finding.md` and `score.json`.
+Without `just`, the same run is `uv sync && uv run python -m lha.run --seed 42`, but then `.env` is not loaded, so `DATABASE_URL` has to be exported in the shell if it isn't the default. A step is one model call or one tool call, and `--seed` fixes both the network and the fault pattern, so the same seed gives the same faults and the same result. Each run writes `runs/<session>/finding.md` and `score.json`.
 
 ## Sample output
 
@@ -71,11 +76,11 @@ Without `just`, the same run is `uv sync && uv run python -m lha.run --seed 42`.
 
 **dns** on **host-12** runs **3** replica(s); the registry expects **5**.
 
-  [x] session succeeded
-  [x] found the drifted service (dns)
-  [x] on the right host (host-12)
-  [x] right counts (expected 5, actual 3)
-  [x] cited drift fact is verified
+  ✓ session succeeded
+  ✓ found the drifted service (dns)
+  ✓ on the right host (host-12)
+  ✓ right counts (expected 5, actual 3)
+  ✓ cited drift fact is verified
 
 steps=255 tool_calls=100 model_calls=155 faults_injected=16 model_errors=5 rejected=2 retries=5 replans=1 hosts=20/20 decoys_refuted=3/3 elapsed=7.6s
 verdict=PASS

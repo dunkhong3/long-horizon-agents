@@ -1,6 +1,6 @@
 """The discovery agent, which reads one host, its services and its documents.
 
-This is the 'breadth' role. It records what exists and which other hosts
+This is the 'breadth' role. It reports what exists and which other hosts
 the documents mention, and it decides nothing about drift.
 """
 

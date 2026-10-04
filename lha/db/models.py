@@ -41,8 +41,8 @@ sessions = Table(
     Column("finished_at", DateTime(timezone=True)),
 )
 
-# Append-only log of everything that happened. Workers and the coordinator
-# both write here, and nothing is ever updated or deleted.
+# Append-only log of everything that happened. Workers, the coordinator and
+# the supervisor write here, and nothing is ever updated or deleted.
 events = Table(
     "events",
     metadata,

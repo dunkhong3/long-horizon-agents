@@ -1,8 +1,8 @@
 """Queries shared by workers and the coordinator.
 
 The interesting ones are claim_task, heartbeat and submit_result, which
-together make leases safe across processes (see 'Heartbeat' in
-docs/design.md).
+together make leases safe across processes (see 'Task queue and
+leases' in docs/design.md).
 """
 
 from datetime import timedelta

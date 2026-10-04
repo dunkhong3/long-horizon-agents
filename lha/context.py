@@ -1,4 +1,4 @@
-"""Builds a ContextPacket for one model call, fresh from Postgres.
+"""Builds a ContextPacket for one task attempt, fresh from Postgres.
 
 This is our answer to the context going bad as the window fills, because the
 model never sees the run's history. It only sees a small packet put together

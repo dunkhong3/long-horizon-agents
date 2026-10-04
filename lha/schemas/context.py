@@ -1,6 +1,6 @@
-"""The ContextPacket, which is everything one model call is allowed to see.
+"""The ContextPacket, which is everything one task attempt is allowed to see.
 
-It is built fresh from Postgres right before each call, used once, and
+It is built fresh from Postgres at the start of each attempt, used once, and
 logged to `events` so we can always see exactly what an agent saw. The raw
 event log itself never goes into a prompt.
 """

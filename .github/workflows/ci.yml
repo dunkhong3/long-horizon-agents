@@ -15,7 +15,7 @@ jobs:
           POSTGRES_PASSWORD: lha
           POSTGRES_DB: lha
         ports:
-          - 5432:5432
+          - 5433:5432
         options: >-
           --health-cmd "pg_isready -U lha"
           --health-interval 2s

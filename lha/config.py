@@ -1,6 +1,6 @@
 """Tunable constants, in one place so the numbers in docs/design.md are easy to find."""
 
-# Leases and heartbeats (see 'Heartbeat' in docs/design.md).
+# Leases and heartbeats (see 'Task queue and leases' in docs/design.md).
 LEASE_SECONDS = 30
 HEARTBEAT_SECONDS = 10
 

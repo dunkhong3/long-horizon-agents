@@ -9,7 +9,7 @@ install:
     uv sync
     git config core.hooksPath .githooks
 
-# start Postgres with Docker
+# start Postgres with Docker, on port 5433
 db-up:
     docker compose up -d --wait
 
