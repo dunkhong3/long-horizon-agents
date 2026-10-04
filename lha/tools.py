@@ -3,11 +3,11 @@
 Every call is logged as a `tool_call` event (a step), success or not, with
 the raw response, so facts can cite the exact event they came from.
 
-Failures are never silent. Each response is validated: an empty 200 or a
-malformed body is a failure, not a success. A transient failure is retried
-a couple of times inside the attempt (each try is a new call number, so a
-new fault roll); if it keeps failing, the tool raises and the whole attempt
-fails, and the coordinator's retry rules take over.
+Failures are never silent, because each response is checked, and an empty
+200 or a malformed body counts as a failure and not a success. A short-lived
+failure is retried a couple of times inside the attempt (each try is a new
+call number, so a new fault roll), and if it keeps failing the tool raises,
+the whole attempt fails, and the coordinator's retry rules take over.
 """
 
 import asyncio
@@ -20,7 +20,7 @@ import httpx
 
 from lha.config import TOOL_RETRIES, TOOL_RETRY_DELAY_SECONDS, TOOL_TIMEOUT_SECONDS
 
-# log(kind, payload) -> event id. Supplied by the worker.
+# log(kind, payload) -> event id, supplied by the worker.
 EventLogger = Callable[[str, dict[str, Any]], Awaitable[UUID]]
 
 
@@ -36,8 +36,8 @@ class ToolFailure(Exception):
 
 
 class NotFound(ToolFailure):
-    """404: the host/service/document doesn't exist. A valid answer, not a
-    fault, and retrying won't change it."""
+    """404, meaning the host, service or document doesn't exist. That is a valid
+    answer and not a fault, and retrying won't change it."""
 
     permanent = True
 
@@ -46,7 +46,7 @@ class NotFound(ToolFailure):
 
 
 class ToolBox:
-    """The tools of one task attempt. Numbers its calls 0, 1, 2, ..."""
+    """The tools of one task attempt, which numbers its calls 0, 1, 2 and so on."""
 
     def __init__(self, http: httpx.AsyncClient, task_key: str, attempt: int, log: EventLogger):
         self.http = http

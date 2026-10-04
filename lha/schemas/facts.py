@@ -1,7 +1,8 @@
 """How facts are named.
 
-A fact is one small, typed claim: (subject, key) -> value. The same
-(subject, key) is "the same fact"; only one row for it is current at a time.
+A fact is one small, typed claim of the form (subject, key) -> value. The
+same (subject, key) counts as 'the same fact', and only one row for it is
+current at a time.
 """
 
 # Fact keys.

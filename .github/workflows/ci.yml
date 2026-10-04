@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: lha
+          POSTGRES_PASSWORD: lha
+          POSTGRES_DB: lha
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lha"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install
+        run: uv sync
+      - name: Lint
+        run: uv run ruff format --check . && uv run ruff check .
+      - name: Tests (includes full runs and a crash-and-resume run)
+        run: uv run pytest -q
+      - name: Full run, default faults
+        run: uv run python -m lha.run --seed 42 --quiet
+      - name: Full run, heavy faults
+        run: uv run python -m lha.run --seed 7 --chaos 0.3 --quiet

@@ -1,8 +1,8 @@
-"""UUIDv7 ids: globally unique, and sortable by creation time.
+"""UUIDv7 ids, which are globally unique and sort by creation time.
 
 Python 3.11 has no uuid7() (it arrives in 3.14) and Postgres 16 has no
-built-in v7, so we build one: 48 bits of Unix milliseconds, then the version
-and variant bits, then random bits (RFC 9562, section 5.7).
+built-in v7, so we build one from 48 bits of Unix milliseconds, then the
+version and variant bits, then random bits (RFC 9562, section 5.7).
 """
 
 import os

@@ -1,16 +1,17 @@
-"""A worker process: claim a task, run its agent, submit the result. Repeat.
+"""A worker process, which claims a task, runs its agent, submits the result and repeats.
 
     python -m lha.agents.worker --session <id> --role discovery --name discovery-1
 
 Workers share nothing with each other or with the coordinator except
 Postgres. They write `events` (every model and tool call) and their own
-task's `result`, and never write facts: the coordinator decides what a
-result means.
+task's `result`, and they never write facts, because deciding what a result
+means is the coordinator's job.
 """
 
 import argparse
 import asyncio
 import contextlib
+import os
 import sys
 from typing import Any
 from uuid import UUID
@@ -46,19 +47,24 @@ class Worker:
         self.role = role
         self.name = name
         self.world_url = world_url
+        self.parent_pid = os.getppid()
 
     async def run(self) -> None:
         async with self.engine.connect() as conn:
             self.session = await crud.get_session(conn, self.session_id)
         async with httpx.AsyncClient(base_url=self.world_url) as http:
             self.http = http
-            while await self._session_running():
+            while await self._session_running() and not self._orphaned():
                 async with self.engine.begin() as conn:
                     task = await crud.claim_task(conn, self.session_id, self.role, self.name)
                 if task is None:
                     await asyncio.sleep(POLL_SECONDS)
                     continue
                 await self._handle(task)
+
+    def _orphaned(self) -> bool:
+        """The supervisor died without stopping us (e.g. it was SIGKILLed)."""
+        return os.getppid() != self.parent_pid
 
     async def _session_running(self) -> bool:
         async with self.engine.connect() as conn:
@@ -87,8 +93,9 @@ class Worker:
         async with self.engine.begin() as conn:
             accepted = await crud.submit_result(conn, task.id, self.name, task.attempt, result)
         if not accepted:
-            # Fenced out: the task moved on (new attempt or cancelled) while
-            # we were finishing. Our result is stale; drop it.
+            # We were fenced out, meaning the task moved on (a new attempt, or
+            # it was cancelled) while we were finishing, so our result is stale
+            # and we drop it.
             await self._log(task, "lease_lost", {"reason": "submit fenced out"})
 
     async def _heartbeat(self, task: Row, work: asyncio.Task) -> None:
@@ -101,7 +108,7 @@ class Worker:
                 return
 
     async def _attempt(self, task: Row) -> dict[str, Any]:
-        """Returns the result to submit: the agent's output, or an error."""
+        """Returns the result to submit, which is the agent's output or an error."""
 
         async def log(kind: str, payload: dict[str, Any]) -> UUID:
             return await self._log(task, kind, payload)

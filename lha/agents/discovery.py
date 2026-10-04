@@ -1,7 +1,7 @@
-"""Discovery agent: reads one host, its services and its documents.
+"""The discovery agent, which reads one host, its services and its documents.
 
-Breadth: it records what exists and which other hosts the documents
-mention. It decides nothing about drift.
+This is the 'breadth' role. It records what exists and which other hosts
+the documents mention, and it decides nothing about drift.
 """
 
 import json
@@ -25,7 +25,7 @@ def policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Call | Fina
     reads = {r["service"]: r for name, r in results if name == "get_service"}
     docs = {r["name"]: r for name, r in results if name == "fetch_document"}
 
-    # One call at a time: every service, then every document.
+    # One call at a time, first every service and then every document.
     for service in info["services"]:
         if service not in reads:
             return Call("get_service", {"host": host, "service": service})
@@ -53,7 +53,7 @@ def policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Call | Fina
 
 
 def fabricate(output: dict[str, Any]) -> dict[str, Any] | None:
-    """A believable lie: a wrong replica count, or a host no document names."""
+    """A believable lie, either a wrong replica count or a host no document names."""
     if output["services"]:
         services = [dict(s) for s in output["services"]]
         services[0]["replicas"] += 1
@@ -67,7 +67,7 @@ def fabricate(output: dict[str, Any]) -> dict[str, Any] | None:
 
 async def run(ctx: AgentContext) -> DiscoverOutput:
     async def get_host(host: str) -> dict:
-        """Read a host: its services and documents."""
+        """Read a host, meaning its services and documents."""
         return await ctx.tools.get_host(host)
 
     async def get_service(host: str, service: str) -> dict:

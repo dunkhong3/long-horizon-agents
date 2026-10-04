@@ -1,7 +1,8 @@
-"""The coordinator: plain code, not an LLM. It owns the plan.
+"""The coordinator, which is plain code and not an LLM, and which owns the plan.
 
-Think of a project manager with a to-do board (`tasks`) and a notebook of
-findings (`facts`). Every loop it:
+It is easiest to think of it as a project manager with a to-do board
+(`tasks`) and a notebook of findings (`facts`), and every loop it does four
+things.
 
   1. reclaims tasks whose worker went silent (expired leases)
   2. processes submitted results, one transaction each:
@@ -11,7 +12,7 @@ findings (`facts`). Every loop it:
   3. checks the goal: a verified drift -> create the report task
   4. stops when the report is accepted (or the run is out of budget)
 
-Workers propose; the coordinator decides. It is the only writer of facts
+Workers propose and the coordinator decides. It is the only writer of facts
 and of the plan, so there is a single source of truth.
 """
 
@@ -61,7 +62,7 @@ PROGRESS_EVERY_SECONDS = 2.0
 
 
 class Rejected(Exception):
-    """A result failed the coordinator's checks (e.g. a fact doesn't match its source)."""
+    """A result failed the coordinator's checks (for example a fact doesn't match its source)."""
 
 
 class Coordinator:
@@ -86,7 +87,7 @@ class Coordinator:
     # --- main loop ----------------------------------------------------------
 
     async def run(self) -> str:
-        """Returns "finished", or "killed" when --kill-at is reached."""
+        """Returns 'finished', or 'killed' when --kill-at is reached."""
         while True:
             async with self.engine.begin() as conn:
                 await self._sweep_expired_leases(conn)
@@ -123,8 +124,8 @@ class Coordinator:
         """Accept or reject one submitted result, in one transaction.
 
         If we crash halfway, the transaction rolls back and the task is still
-        `submitted`; on resume it's processed again. There is never a state
-        where facts exist but their follow-up tasks don't.
+        `submitted`, so on resume it is simply processed again. There is never
+        a state where facts exist but their follow-up tasks don't.
         """
         q = select(tasks).where(tasks.c.id == task_id).with_for_update()
         task = (await conn.execute(q)).one()
@@ -150,10 +151,13 @@ class Coordinator:
             "write_report": self._accept_report,
         }
         try:
-            # A savepoint: if a check fails halfway, its writes are undone.
+            # A savepoint, so if a check fails halfway its writes are undone.
             async with conn.begin_nested():
                 await handlers[task.type](conn, task, output)
-        except Rejected as e:
+        except (Rejected, crud.FactConflict) as e:
+            # FactConflict means the result would overwrite a verified fact,
+            # which we never do silently, so it is treated like any other
+            # rejected result.
             await self._retry_or_fail(conn, task, "rejected", str(e))
             return
 
@@ -204,7 +208,7 @@ class Coordinator:
                     source_task_id=tid, source_event_id=UUID(d.event_id),
                 )  # fmt: skip
 
-        # 3. Follow-ups. Creating a task that already exists is a no-op.
+        # 3. Follow-ups. Creating a task that already exists does nothing.
         for d in out.documents:
             for host in d.mentions:
                 await crud.create_task(conn, sid, "discover_host", DiscoverInput(host=host), tid)
@@ -266,10 +270,10 @@ class Coordinator:
         )  # fmt: skip
         drift = await crud.current_fact(conn, self.sid, subject, F.DRIFT)
         if drift is None or drift.status != F.INFERRED:
-            return  # already decided; this read is just extra evidence
+            return  # already decided, so this read is just extra evidence
 
         # Two independent reads must agree. The newest read is not
-        # automatically the truth: it could be stale too.
+        # automatically the truth, because it could be stale too.
         evidence = [*drift.evidence, {"event_id": out.event_id, "replicas": out.replicas}]
         value, votes = Counter(e["replicas"] for e in evidence).most_common(1)[0]
         expected = drift.value["expected"]
@@ -281,8 +285,8 @@ class Coordinator:
                 conn, self.sid, drift.id, status=F.VERIFIED, evidence=evidence, value=new_value
             )
         else:
-            # The reads disagree: neither is trusted. Break the tie with
-            # another round, up to the cap.
+            # The reads disagree, so neither is trusted, and we break the tie
+            # with another round, up to the cap.
             await crud.update_fact(conn, self.sid, drift.id, status=F.INFERRED, evidence=evidence)
             if inp.round < MAX_VERIFY_ROUNDS:
                 nxt = VerifyInput(service=inp.service, host=inp.host, round=inp.round + 1)
@@ -391,10 +395,10 @@ class Coordinator:
         await self._decide(conn, task, "replan", "out of rounds; given up")
 
     async def _sweep_expired_leases(self, conn: AsyncConnection) -> None:
-        """A worker that stopped heartbeating lost its task: hand it out again.
+        """A worker that stopped heartbeating has lost its task, so hand it out again.
 
-        The attempt bump is the fencing token: if that worker was only slow,
-        its late submit now matches 0 rows and is dropped.
+        The attempt bump is the fencing token, which means that if that worker
+        was only slow, its late submit now matches 0 rows and is dropped.
         """
         q = (
             select(tasks)
@@ -483,8 +487,8 @@ class Coordinator:
 
 
 async def progress_line(engine: AsyncEngine, sid: UUID, steps: int) -> str:
-    """A one-line summary, recomputed from the database every time (never
-    from a previous summary)."""
+    """A one-line summary, worked out again from the database every time (and
+    never from a previous summary)."""
     async with engine.connect() as conn:
         by_status = dict(
             (

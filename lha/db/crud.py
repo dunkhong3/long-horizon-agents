@@ -1,7 +1,8 @@
 """Queries shared by workers and the coordinator.
 
-The interesting ones are claim_task, heartbeat and submit_result: together
-they make leases safe across processes (see "Heartbeat" in docs/design.md).
+The interesting ones are claim_task, heartbeat and submit_result, which
+together make leases safe across processes (see 'Heartbeat' in
+docs/design.md).
 """
 
 from datetime import timedelta
@@ -20,7 +21,7 @@ from lha.ids import uuid7
 from lha.schemas.facts import OBSERVED, SUPERSEDED, VERIFIED
 from lha.schemas.tasks import ROLE_OF, task_key, task_scope
 
-# A "step" is one model call or one tool call.
+# A 'step' is one model call or one tool call.
 STEP_KINDS = ("model_call", "tool_call")
 
 
@@ -81,7 +82,8 @@ async def create_task(
 ) -> UUID | None:
     """Create a task unless one with the same task_key already exists.
 
-    Returns the new task's id, or None if it already existed (a no-op).
+    Returns the new task's id, or None if it already existed (in which case
+    nothing happens).
     """
     stmt = (
         pg_insert(tasks)
@@ -105,8 +107,8 @@ async def create_task(
     return (await conn.execute(stmt)).scalar_one_or_none()
 
 
-# One statement, so one transaction: pick the oldest ready task for this role,
-# lock it (skipping rows other workers have locked), and lease it.
+# One statement, so one transaction. It picks the oldest ready task for this
+# role, locks it (skipping rows other workers have locked), and leases it.
 CLAIM_SQL = text(
     """
     UPDATE tasks SET status = 'leased', leased_by = :worker,
@@ -129,9 +131,9 @@ async def claim_task(conn: AsyncConnection, session_id: UUID, role: str, worker:
 
 
 async def heartbeat(conn: AsyncConnection, task_id: UUID, worker: str, attempt: int) -> bool:
-    """Extend the lease. False means the task was taken from us.
+    """Extend the lease, where False means the task was taken from us.
 
-    The `attempt` check is the fencing token: if the coordinator reclaimed
+    The `attempt` check is the fencing token, so if the coordinator reclaimed
     the task (attempt + 1) or cancelled it, this matches 0 rows.
     """
     stmt = (
@@ -151,7 +153,7 @@ async def heartbeat(conn: AsyncConnection, task_id: UUID, worker: str, attempt: 
 async def submit_result(
     conn: AsyncConnection, task_id: UUID, worker: str, attempt: int, result: dict[str, Any]
 ) -> bool:
-    """Hand a result (or an error) to the coordinator. Same fencing as heartbeat."""
+    """Hand a result (or an error) to the coordinator, with the same fencing as heartbeat."""
     stmt = (
         update(tasks)
         .where(
@@ -170,11 +172,11 @@ async def submit_result(
 
 
 class FactConflict(Exception):
-    """A write would silently replace a verified fact. Never allowed."""
+    """A write would silently replace a verified fact, which is never allowed."""
 
 
 async def current_fact(conn: AsyncConnection, session_id: UUID, subject: str, key: str) -> Row | None:
-    # At most one row matches: the partial unique index guarantees it.
+    # At most one row matches, because the partial unique index guarantees it.
     q = select(facts).where(
         facts.c.session_id == session_id,
         facts.c.subject == subject,
@@ -200,18 +202,18 @@ async def upsert_fact(
     status: str = OBSERVED,
     evidence: Any = None,
 ) -> UUID:
-    """Write a fact. Same value: no-op. Different value: supersede the old row.
+    """Write a fact. The same value does nothing, and a different value supersedes the old row.
 
-    Facts are never deleted; a replaced row is kept with status 'superseded'.
-    Only the coordinator calls this.
+    Facts are never deleted, and a replaced row is kept with status
+    'superseded'. Only the coordinator calls this.
     """
     cur = await current_fact(conn, session_id, subject, key)
     if cur is not None and cur.value == value and cur.status == status:
-        return cur.id  # idempotent: a retry writing the same fact changes nothing
+        return cur.id  # a retry writing the same fact changes nothing
     if cur is not None and cur.status == VERIFIED:
         raise FactConflict(f"{subject} {key}: verified value {cur.value!r}, got {value!r}")
     if cur is not None:
-        # Mark the old row first, or the unique index rejects the insert.
+        # Mark the old row first, otherwise the unique index rejects the insert.
         await conn.execute(update(facts).where(facts.c.id == cur.id).values(status=SUPERSEDED))
     fact_id = uuid7()
     await conn.execute(
@@ -242,7 +244,7 @@ async def upsert_fact(
 async def update_fact(
     conn: AsyncConnection, session_id: UUID, fact_id: UUID, *, status: str, **values: Any
 ) -> None:
-    """Change a fact's status in place (e.g. inferred -> verified), and log it."""
+    """Change a fact's status in place (for example inferred -> verified), and log it."""
     await conn.execute(update(facts).where(facts.c.id == fact_id).values(status=status, **values))
     payload = {"fact_id": str(fact_id), "status": status, **values}
     await log_event(conn, session_id, "coordinator", "fact_changed", payload)

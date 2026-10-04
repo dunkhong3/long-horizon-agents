@@ -9,7 +9,7 @@ install:
     uv sync
     git config core.hooksPath .githooks
 
-# start Postgres (no Docker: `service postgresql start`)
+# start Postgres with Docker
 db-up:
     docker compose up -d --wait
 
@@ -34,3 +34,9 @@ test *args:
 # run the system
 start *args:
     uv run python -m lha.run {{args}}
+
+# a full run, then a crash at step 120 and a resume
+demo:
+    uv run python -m lha.run --seed 42
+    -uv run python -m lha.run --seed 7 --kill-at 120
+    uv run python -m lha.run --resume

@@ -1,4 +1,4 @@
-"""Reporter agent: writes the finding from verified facts only.
+"""The reporter agent, which writes the finding from verified facts only.
 
 It runs once, at the end. Its ContextPacket contains only verified drift
 facts plus the registry entry and latest read behind each one.

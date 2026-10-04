@@ -1,6 +1,9 @@
-"""Run the mock network: python -m lha.world --seed 42 --port 8765"""
+"""Run the mock network with python -m lha.world --seed 42 --port 8765"""
 
 import argparse
+import os
+import threading
+import time
 
 import uvicorn
 
@@ -17,9 +20,22 @@ def main() -> None:
     parser.add_argument("--port", type=int, required=True)
     args = parser.parse_args()
 
+    _exit_when_orphaned()
     world = generate_world(args.seed, args.hosts)
     app = create_app(world, args.fault_rate)
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning", access_log=False)
+
+
+def _exit_when_orphaned() -> None:
+    """Stop if the supervisor dies without stopping us (e.g. it was SIGKILLed)."""
+    parent = os.getppid()
+
+    def watch() -> None:
+        while os.getppid() == parent:
+            time.sleep(1)
+        os._exit(0)
+
+    threading.Thread(target=watch, daemon=True).start()
 
 
 if __name__ == "__main__":

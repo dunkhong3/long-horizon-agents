@@ -1,4 +1,4 @@
-"""The supervisor: start everything, run the coordinator, score the result.
+"""The supervisor, which starts everything, runs the coordinator and scores the result.
 
     python -m lha.run --seed 42                 # a full run, prints PASS/FAIL
     python -m lha.run --seed 42 --chaos 0.3     # more faults
@@ -73,8 +73,8 @@ class Supervisor:
         self.workers[name] = (role, proc)
 
     async def restart_dead_workers(self) -> None:
-        """Called every coordinator loop. A worker that died is replaced; its
-        task's lease expires and the task is handed out again."""
+        """Called every coordinator loop. A worker that died is replaced, and its
+        task's lease expires so the task is handed out again."""
         for name, (role, proc) in list(self.workers.items()):
             if proc.returncode is not None:
                 print(f"[supervisor] {name} exited ({proc.returncode}); restarting it")
@@ -92,7 +92,7 @@ class Supervisor:
         raise RuntimeError("the mock network did not start")
 
     def kill_all(self) -> None:
-        """SIGKILL every child: the harshest crash, nothing gets to clean up."""
+        """SIGKILL every child, which is the harshest crash because nothing gets to clean up."""
         for proc in self._procs():
             if proc.returncode is None:
                 proc.kill()
@@ -230,7 +230,7 @@ async def main(args: argparse.Namespace) -> int:
     try:
         outcome = await coordinator.run()
         if outcome == "killed":
-            # Simulate a hard crash of the whole run: no cleanup, no goodbyes.
+            # Act out a hard crash of the whole run, with no cleanup at all.
             sup.kill_all()
             print(f"[supervisor] --kill-at {args.kill_at} reached: killed every process")
             print(f"[supervisor] continue with: just start --resume {sid}")

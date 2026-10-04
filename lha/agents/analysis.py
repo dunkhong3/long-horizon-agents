@@ -1,10 +1,11 @@
-"""Analysis agent: compares services with the registry, and re-reads drifts.
+"""The analysis agent, which compares services with the registry and re-reads drifts.
 
-Depth. Two task types:
-- compare_service: no network call. Compares the discovered replica count
-  with the registry entry, both taken from the ContextPacket's facts.
-- verify_drift: a fresh read of a service suspected of drift. It reports
-  the number it saw; the coordinator decides what that means.
+This is the 'depth' role, and it handles two task types. The first is
+compare_service, which makes no network call at all and compares the
+discovered replica count with the registry entry, both taken from the facts
+in the ContextPacket. The second is verify_drift, which is a fresh read of a
+service we suspect has drifted, and it only reports the number it saw,
+because deciding what that number means is the coordinator's job.
 """
 
 from typing import Any
@@ -20,8 +21,8 @@ def compare_policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Fin
     read = _find(packet, service_subject(service, host), REPLICAS)
     expected = _find(packet, registry_subject(service), EXPECTED)
     if read is None or expected is None:
-        # Missing context: answer honestly with what we have; the
-        # coordinator's checks will reject it and the task is retried.
+        # The context is missing a fact, so we answer honestly with what we
+        # have, and the coordinator's checks reject it and retry the task.
         return Final({"service": service, "host": host, "expected": -1, "actual": -1,
                       "drift": False, "read_fact_id": "", "registry_fact_id": ""})  # fmt: skip
     return Final(

@@ -1,33 +1,20 @@
 # CLAUDE.md
 
-A personal side project: a multi-agent system that stays coherent over a
-long horizon. Architecture and judgment over polish. A small system that
-works end to end beats a big one that doesn't.
+## What this is
 
-Read first: `README.md` (overview, how to run) and `docs/design.md` (all
-design decisions: goal, roles, tables, context packets, faults).
+This is a personal side project, a system of several agents that stays coherent over a long run, where architecture and judgement matter more than polish, and a small system that works end to end beats a big one that doesn't. Read `README.md` first for the overview and how to run it, and then `docs/design.md`, which holds every design decision (the goal, the roles, the tables, the context packets and the faults).
 
 ## Working preferences
 
-- Keep responses short and concise.
-- Push directly to `main`. No feature branches or PRs unless asked.
-- Build the v1 core end to end first (see "Scope" in `docs/design.md`).
-- Keep scope small. Go deep on
-  (1) state and context management and (2) failure detection and recovery.
-  Keep everything else simple.
-- **No real LLM calls, ever.** No API keys, no spend. Every agent uses a
-  deterministic fake model (Pydantic AI `FunctionModel`).
-- Long-form docs go in `docs/`. `README.md` and `NOTES.md` stay at the
-  root.
-- Write everything (code, docs, commit messages) as a personal side
-  project. Don't mention companies or who it was built for.
+Keep responses short and concise, and push directly to `main`, with no feature branches or pull requests unless asked. Build the v1 core end to end first (see 'Scope and versions' in `docs/design.md`), and keep the scope small, going deep on state and context management and on failure detection and recovery, and keeping everything else simple. There are never any real LLM calls, meaning no API keys and no spend, because every agent uses a deterministic fake model through Pydantic AI's `FunctionModel`. Long-form docs go in `docs/`, while `README.md` and `NOTES.md` stay at the root. Write everything (code, docs and commit messages) as a personal side project, and don't mention companies or who it was built for.
+
+## Writing style
+
+Every doc, note and code comment follows the owner's writing style. It is narrative and explanatory, as if explaining to a colleague new to the subject, with long flowing sentences joined by 'which', 'but', 'so' and 'because', plain everyday words, and 'we' and 'our' for the team's view. Every technical term is explained on first use in each document, in the form 'X, which is Y'. There are no em dashes and no spaced en dashes, a short dash is only used inside number ranges, there are at most two or three colons per document outside code, there are no question marks outside quotes, no rhetorical questions, no punchy fragments, no idioms and no emojis, and prose is preferred over bullet points and tables. Double quotes are only for someone's exact words, and our own labels go in single quotes. Every claim about the code points to its file and line range, and anything not in the code is stated plainly as 'the code does not ...', backed by an actual search.
 
 ## Stack
 
-Python 3.11, uv, just, Pydantic + Pydantic AI (agents only, **not**
-pydantic-graph: coordination is our own code, explicit and testable), FastAPI
-(the mock network service), SQLAlchemy async + asyncpg, Postgres 16, asyncio,
-pytest, ruff.
+The stack is Python 3.11, uv, just, Pydantic and Pydantic AI (for the agents only, and not pydantic-graph, because the coordination is our own code, explicit and testable), FastAPI (for the mock network service), SQLAlchemy async with asyncpg, Postgres 16, asyncio, pytest and ruff.
 
 ## Commands
 
@@ -37,49 +24,22 @@ just check     # ruff format --check + ruff check
 just fmt       # auto-fix
 just test      # pytest (needs Postgres)
 just start     # run the system
+just demo      # full run + crash at step 120 + resume
 ```
 
-Run `just fmt && just check && just test` before every commit.
-
-### Postgres in the cloud container
-
-There is no Docker daemon here. Use the system Postgres:
+Run `just fmt && just check && just test` before every commit. In the cloud container there is no Docker daemon, so use the system Postgres, which may need starting again after the container restarts.
 
 ```bash
 service postgresql start
 su postgres -c "psql -c \"CREATE USER lha WITH PASSWORD 'lha' SUPERUSER;\" -c \"CREATE DATABASE lha OWNER lha;\""
 ```
 
-Default `DATABASE_URL`: `postgresql+asyncpg://lha:lha@localhost:5432/lha`.
-Elsewhere, use `just db-up` (docker compose).
+The default `DATABASE_URL` is `postgresql+asyncpg://lha:lha@localhost:5432/lha`, and anywhere else `just db-up` starts Postgres with docker compose.
 
 ## Commit messages
 
-- [Conventional Commits](https://www.conventionalcommits.org/):
-  `<type>(<optional scope>): <summary>`. Types: feat, fix, docs, chore,
-  refactor, test, perf, build, ci, style, revert.
-- Subject: imperative mood, lower case, no trailing period.
-- Blank line, then a body explaining *why*.
-- **Every line ≤ 72 chars** (vim's gitcommit `textwidth`, so `gqip` /
-  `ggVGgq` wraps to the same width). URLs and trailers are exempt.
-- Enforced by `.githooks/commit-msg` (installed by `just install`).
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), in the form `<type>(<optional scope>): <summary>`, with the types feat, fix, docs, chore, refactor, test, perf, build, ci, style and revert. The subject is in the imperative mood, in lower case and without a trailing full stop, followed by a blank line and a body explaining why. Every line is at most 72 characters, which is vim's `textwidth` for git commits, so `gqip` or `ggVGgq` wraps to the same width, and URLs and trailers are the only exceptions. This is enforced by `.githooks/commit-msg`, which `just install` sets up. Commits are authored by the owner (`dunkhong3 <wddpzh@gmail.com>`) with a `Co-Authored-By` trailer for Claude, and they never include a link to a chat session.
 
-## Architecture rules (don't drift from these)
+## Architecture rules
 
-- The **coordinator is plain code, not an LLM**. LLMs propose; code decides
-  what gets accepted.
-- **Postgres is the only shared state.** Tables: `sessions`, `events`
-  (append-only, everything), `tasks` (created only from accepted results,
-  leased with `FOR UPDATE SKIP LOCKED`), `facts` (provenance + status).
-- **Never feed the raw log to a model.** Each call gets a fresh
-  `ContextPacket` (pinned → relevant facts → recent → pointers), within a
-  token budget. Summaries are recomputed from facts, never from summaries.
-- **Failed work never flows downstream.** Retry with the same role, then
-  replan.
-- **Workers never write facts.** They submit a result (fenced by
-  `attempt`); the coordinator validates it and commits facts + follow-up
-  tasks in one transaction.
-- **Faults are seeded:** `hash(seed, task_key, attempt, call_no)`, so the
-  same seed gives the same faults and outcome (not the same event order).
-- Session ends when the goal is met (leftover tasks → `cancelled`) or the
-  budget runs out.
+These rules should not drift. First, the coordinator is plain code and not an LLM, so LLMs propose and code decides what gets accepted. Second, Postgres is the only shared state, with the tables `sessions`, `events` (append-only, everything), `tasks` (created only from accepted results and leased with `FOR UPDATE SKIP LOCKED`) and `facts` (with where each fact came from and its status). Third, the raw log is never fed to a model, and each call gets a fresh `ContextPacket` (pinned, then relevant facts, then recent events, then pointers) within a token budget, with summaries worked out again from the facts and never from other summaries. Fourth, failed work never flows downstream, so it is retried with the same role and then replanned. Fifth, workers never write facts, because they submit a result fenced by `attempt`, and the coordinator checks it and commits the facts and the follow-up tasks in one transaction. Sixth, faults are seeded with `hash(seed, task_key, attempt, call_no)`, so the same seed gives the same faults and the same outcome, though not the same order of events. Lastly, a session ends when the goal is met (with leftover tasks set to `cancelled`) or when the budget runs out.

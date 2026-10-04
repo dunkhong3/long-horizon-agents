@@ -1,17 +1,17 @@
 """Builds a ContextPacket for one model call, fresh from Postgres.
 
-This is the answer to "context corrupts as the window fills": the model
-never sees the run's history. It sees a small packet assembled for this one
-task, within a token budget:
+This is our answer to the context going bad as the window fills, because the
+model never sees the run's history. It only sees a small packet put together
+for this one task, within a token budget, made of four layers.
 
     1. pinned    goal + this task's spec            never cut
     2. facts     current facts in the task's scope  newest first
     3. recent    the last few events of this task   e.g. why the last try failed
     4. pointers  ids of earlier raw tool outputs    payloads left out
 
-The packet is built top-down: add layers in priority order while the next
-item still fits. Nothing is ever cut in half, and what was left out is
-recorded in `omitted`.
+The packet is built from the top down, which means we add the layers in
+priority order for as long as the next item still fits. Nothing is ever cut
+in half, and whatever was left out is recorded in `omitted`.
 """
 
 import json
@@ -29,11 +29,11 @@ from lha.schemas.facts import DRIFT, REPLICAS, SUPERSEDED, VERIFIED, registry_su
 
 
 class ContextOverflow(Exception):
-    """The pinned layer alone doesn't fit: the task is too big (a planning bug)."""
+    """The pinned layer alone doesn't fit, so the task is too big (a planning bug)."""
 
 
 def estimate_tokens(obj: Any) -> int:
-    """~4 characters per token. Good enough for fake models."""
+    """Roughly 4 characters per token, which is good enough for fake models."""
     if hasattr(obj, "model_dump"):
         obj = obj.model_dump()
     return len(json.dumps(obj, default=str)) // 4 + 1
@@ -63,8 +63,8 @@ def pack(
                 kept[layer].append(item)
                 used += cost
             else:
-                # Once something doesn't fit, everything after it is lower
-                # priority and is left out too.
+                # Once something doesn't fit, everything after it has a lower
+                # priority, so it is left out too.
                 full = True
                 omitted[layer] = omitted.get(layer, 0) + 1
 
@@ -95,7 +95,7 @@ async def build_packet(conn: AsyncConnection, session: Row, task: Row) -> Contex
 
 
 async def _select_facts(conn: AsyncConnection, session_id: UUID, scope: list[str]) -> list[FactView]:
-    """Current facts in the task's scope. A plain SQL filter, no embeddings."""
+    """Current facts in the task's scope, picked with a plain SQL filter and no embeddings."""
     conditions = []
     for entry in scope:
         if entry == "verified_drifts":
@@ -116,7 +116,7 @@ async def _select_facts(conn: AsyncConnection, session_id: UUID, scope: list[str
         # each verified drift.
         extra = []
         for row in rows:
-            service, host = row.subject.removeprefix("service:").split("@")
+            service = row.subject.removeprefix("service:").split("@")[0]
             extra += [(registry_subject(service), "replicas"), (row.subject, REPLICAS)]
         for subject, key in extra:
             q = select(facts).where(
@@ -133,7 +133,7 @@ async def _select_facts(conn: AsyncConnection, session_id: UUID, scope: list[str
 
 
 async def _recent_events(conn: AsyncConnection, session_id: UUID, task_id: UUID) -> list[EventView]:
-    """What happened to this task before: failed tool calls and coordinator decisions."""
+    """What happened to this task before, meaning the coordinator's decisions about it."""
     q = (
         select(events)
         .where(

@@ -1,6 +1,6 @@
-"""The scorer: did the run find the planted drift, with verified evidence?
+"""The scorer, which works out whether the run found the planted drift with verified evidence.
 
-It regenerates the world from the session's seed (nothing about the answer
+It builds the world again from the session's seed (nothing about the answer
 is stored in the database) and compares it with the accepted report.
 """
 

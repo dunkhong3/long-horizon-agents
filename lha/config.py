@@ -1,16 +1,16 @@
 """Tunable constants, in one place so the numbers in docs/design.md are easy to find."""
 
-# Leases and heartbeats (see "Heartbeat" in docs/design.md).
+# Leases and heartbeats (see 'Heartbeat' in docs/design.md).
 LEASE_SECONDS = 30
 HEARTBEAT_SECONDS = 10
 
-# Retries. A retry is the same task row with attempt + 1.
+# Retries, where a retry is the same task row with attempt + 1.
 MAX_ATTEMPTS = 3
 BACKOFF_BASE_SECONDS = 0.25  # retry n waits BACKOFF_BASE_SECONDS * 2**n
-# New rounds are new task rows (task_key gets a "#n" suffix).
+# New rounds are new task rows (the task_key gets a '#n' suffix).
 MAX_ROUNDS = 2  # discover_host and compare_service
 MAX_VERIFY_ROUNDS = 3  # verify_drift
-NEW_ROUND_DELAY_SECONDS = 1.0  # "try again later, after other work"
+NEW_ROUND_DELAY_SECONDS = 1.0  # 'try again later, after other work'
 
 # Tools talking to the mock network.
 TOOL_TIMEOUT_SECONDS = 1.0  # the client gives up after this

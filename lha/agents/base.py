@@ -1,9 +1,10 @@
-"""What every agent shares: its per-attempt context and the fake model.
+"""What every agent shares, which is its per-attempt context and the fake model.
 
-The agent loop, tool calling and output validation are real Pydantic AI.
-Only the "brain" is scripted: each agent supplies a `policy`, a plain
-function that looks at the ContextPacket and the tool results so far and
-decides the next tool call or the final answer, the same way an LLM would.
+The agent loop, the tool calling and the output validation are all real
+Pydantic AI, and only the 'brain' is scripted. Each agent supplies a
+`policy`, which is a plain function that looks at the ContextPacket and the
+tool results so far and decides the next tool call or the final answer, the
+same way an LLM would.
 """
 
 from collections.abc import Awaitable, Callable
@@ -61,10 +62,10 @@ class Final:
     output: dict[str, Any]
 
 
-# policy(packet, tool_results) -> next decision. tool_results is the list of
-# (tool name, returned data) so far in this attempt, in order.
+# policy(packet, tool_results) -> next decision, where tool_results is the
+# list of (tool name, returned data) so far in this attempt, in order.
 Policy = Callable[[ContextPacket, list[tuple[str, Any]]], Call | Final]
-# fabricate(output) -> a plausible-looking but wrong output, or None.
+# fabricate(output) -> an output that looks believable but is wrong, or None.
 Fabricate = Callable[[dict[str, Any]], dict[str, Any] | None]
 
 
@@ -79,13 +80,13 @@ def tool_results(messages: list[ModelMessage]) -> list[tuple[str, Any]]:
 
 
 def scripted_model(ctx: AgentContext, policy: Policy, fabricate: Fabricate) -> FunctionModel:
-    """Wrap a policy as a Pydantic AI model, with seeded "model errors".
+    """Wrap a policy as a Pydantic AI model, with seeded 'model errors'.
 
-    A small, seeded share of final answers is corrupted on purpose, to prove
-    that bad output never reaches the shared state:
-    - malformed: breaks the output schema, so Pydantic AI rejects it;
-    - fabricated: valid schema, wrong content (a made-up number or host),
-      so only the coordinator's source check can catch it.
+    A small, seeded share of final answers is broken on purpose, to show that
+    bad output never reaches the shared state. A 'malformed' answer breaks
+    the output schema, so Pydantic AI rejects it. A 'fabricated' answer keeps
+    a valid schema but has the wrong content (a made-up number or host), so
+    only the coordinator's source check can catch it.
     """
 
     async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -111,7 +112,7 @@ def scripted_model(ctx: AgentContext, policy: Policy, fabricate: Fabricate) -> F
 
 
 def _malformed(output: dict[str, Any]) -> dict[str, Any]:
-    """Drop the first field: the output no longer matches its schema."""
+    """Drop the first field, so the output no longer matches its schema."""
     return dict(list(output.items())[1:])
 
 
@@ -122,7 +123,7 @@ async def run_agent(
     fabricate: Fabricate,
     tools: list[Callable[..., Awaitable[Any]]] = (),
 ) -> BaseModel:
-    """One attempt: run the agent loop until it produces a final answer.
+    """Run one attempt, which is the agent loop until it gives a final answer.
 
     The model only ever sees the ContextPacket (as the user prompt) and the
     results of its own tool calls in this attempt.
@@ -130,7 +131,7 @@ async def run_agent(
     agent = Agent(
         scripted_model(ctx, policy, fabricate),
         output_type=output_type,
-        retries=0,  # an invalid output fails the attempt; the coordinator retries
+        retries=0,  # an invalid output fails the attempt, and the coordinator retries it
         tools=list(tools),
     )
     result = await agent.run(ctx.packet.model_dump_json())

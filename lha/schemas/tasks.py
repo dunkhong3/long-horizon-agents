@@ -1,4 +1,4 @@
-"""Task types: their inputs, outputs, roles, keys and scopes.
+"""Task types, with their inputs, outputs, roles, keys and scopes.
 
 These Pydantic models are the contract between processes. A worker's result
 must validate against the output model of its task type before the
@@ -53,9 +53,9 @@ INPUT_MODELS: dict[str, type[BaseModel]] = {
 }
 
 # --- outputs ----------------------------------------------------------------
-# Every fact a worker reports cites its source: the id of the tool-call event
-# it was read from, or the ids of the facts it compared. The coordinator
-# checks those citations before committing anything.
+# Every fact a worker reports cites its source, which is the id of the
+# tool-call event it was read from or the ids of the facts it compared. The
+# coordinator checks those citations before committing anything.
 
 
 class ServiceRead(BaseModel):
@@ -115,10 +115,11 @@ OUTPUT_MODELS: dict[str, type[BaseModel]] = {
 
 
 def task_key(task_type: str, inp: BaseModel) -> str:
-    """A stable, readable name for a task: `<type>:<what it's about>[#round]`.
+    """A stable, readable name for a task, in the form `<type>:<what it's about>[#round]`.
 
-    It's the same in every run, so it dedups task creation and seeds faults.
-    Round 1 has no suffix; a deliberate new round of the same work gets "#n".
+    It is the same in every run, so it stops the same task being created
+    twice and it seeds the faults. Round 1 has no suffix, and a deliberate new
+    round of the same work gets '#n'.
     """
     if isinstance(inp, DiscoverInput):
         base = f"discover_host:{inp.host}"
@@ -138,8 +139,8 @@ def task_key(task_type: str, inp: BaseModel) -> str:
 def task_scope(inp: BaseModel) -> list[str]:
     """Which facts the context builder selects for this task.
 
-    Entries are exact subjects, "*@<host>" for everything on a host, or
-    "verified_drifts" for the reporter.
+    Entries are exact subjects, '*@<host>' for everything on a host, or
+    'verified_drifts' for the reporter.
     """
     if isinstance(inp, DiscoverInput):
         return [host_subject(inp.host), f"*@{inp.host}"]

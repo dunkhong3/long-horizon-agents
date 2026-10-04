@@ -1,7 +1,8 @@
-"""Seeded "dice rolls" for fault injection.
+"""Seeded 'dice rolls' for fault injection.
 
-Every decision comes from hashing stable inputs, never from a shared random
-generator, so it doesn't matter which process asks first or in what order:
+Every decision comes from hashing stable inputs and never from a shared
+random number generator, so it doesn't matter which process asks first or
+in what order. A call looks like this.
 
     roll(seed, "discover_host:host-4", attempt, call_no)
 
@@ -18,8 +19,8 @@ FAULT_KINDS = ("server_error", "rate_limited", "timeout", "empty_response")
 def roll(seed: int, *parts: object) -> float:
     """A deterministic number in [0, 1) for these inputs.
 
-    Uses sha256, not Python's hash(): hash() of a string changes on every
-    process start (PYTHONHASHSEED), which would break reproducibility.
+    It uses sha256 and not Python's hash(), because hash() of a string changes
+    on every process start (PYTHONHASHSEED), which would break reproducibility.
     """
     text = "|".join(str(p) for p in (seed, *parts))
     digest = hashlib.sha256(text.encode()).digest()

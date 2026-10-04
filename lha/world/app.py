@@ -1,7 +1,7 @@
 """The mock network as an HTTP service (FastAPI).
 
-It plays "the outside world": it keeps no state and writes nothing to
-Postgres. Every request carries three headers from the calling tool:
+It plays 'the outside world', so it keeps no state and writes nothing to
+Postgres. Every request carries three headers from the calling tool.
 
     X-Task-Key, X-Attempt, X-Call-No
 
@@ -35,7 +35,7 @@ def create_app(world: World, fault_rate: float) -> FastAPI:
         if fault == "rate_limited":
             return JSONResponse({"detail": "slow down"}, status_code=429)
         if fault == "empty_response":
-            return Response(content=b"", status_code=200)  # "silent success"
+            return Response(content=b"", status_code=200)  # 'silent success'
         if fault == "timeout":
             await asyncio.sleep(TIMEOUT_FAULT_SECONDS)  # the client gives up first
         return await call_next(request)
@@ -46,8 +46,8 @@ def create_app(world: World, fault_rate: float) -> FastAPI:
 
     @app.get("/hosts/{host}")
     async def get_host(host: str) -> dict:
-        # Deliberately no "list all hosts": hidden hosts are only found
-        # through documents.
+        # There is deliberately no 'list all hosts', so hidden hosts can only
+        # be found through documents.
         if host not in world.hosts:
             raise HTTPException(404, f"no such host: {host}")
         return {
@@ -62,8 +62,8 @@ def create_app(world: World, fault_rate: float) -> FastAPI:
         if s is None or s.host != host:
             raise HTTPException(404, f"no service {service} on {host}")
         replicas = s.actual
-        # Decoys: discovery reads see a stale count, verify reads see the
-        # truth. Stale reads are never applied to the drifted service.
+        # Decoys, where discovery reads see a stale count and verify reads see
+        # the truth. Stale reads are never applied to the drifted service.
         if service in world.decoys and request.headers.get("x-task-key", "").startswith("discover_host:"):
             replicas = world.decoys[service]
         return {"host": host, "service": service, "replicas": replicas}

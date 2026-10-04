@@ -1,4 +1,4 @@
-"""The four tables. Postgres is the only state shared between processes.
+"""The four tables, where Postgres is the only state shared between processes.
 
 These are internal storage definitions (SQLAlchemy Core). The contracts
 between processes live in lha/schemas.
@@ -21,8 +21,8 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 metadata = MetaData()
 
-# clock_timestamp() rather than now(): now() is fixed for a whole transaction,
-# and the coordinator creates several rows per transaction.
+# clock_timestamp() rather than now(), because now() is fixed for a whole
+# transaction and the coordinator creates several rows per transaction.
 CREATED_AT = {"server_default": text("clock_timestamp()"), "nullable": False}
 
 sessions = Table(
@@ -42,7 +42,7 @@ sessions = Table(
 )
 
 # Append-only log of everything that happened. Workers and the coordinator
-# both write here; nothing is ever updated or deleted.
+# both write here, and nothing is ever updated or deleted.
 events = Table(
     "events",
     metadata,
@@ -50,7 +50,7 @@ events = Table(
     Column("session_id", UUID(as_uuid=True), ForeignKey("sessions.id"), nullable=False),
     Column("task_id", UUID(as_uuid=True)),
     Column("attempt", Integer),
-    Column("actor", Text, nullable=False),  # "coordinator" or a worker name
+    Column("actor", Text, nullable=False),  # 'coordinator' or a worker name
     Column("kind", Text, nullable=False),  # model_call, tool_call, decision, ...
     Column("payload", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), **CREATED_AT),
@@ -94,7 +94,7 @@ facts = Table(
     Column("status", Text, nullable=False),  # observed|inferred|verified|refuted|superseded
     Column("source_task_id", UUID(as_uuid=True)),
     Column("source_event_id", UUID(as_uuid=True)),
-    Column("evidence", JSONB),  # for drift claims: the reads backing it
+    Column("evidence", JSONB),  # for drift claims, the reads backing it
     Column("created_at", DateTime(timezone=True), **CREATED_AT),
     # At most one *current* fact per (session, subject, key). Superseded rows
     # are kept as history and don't count.

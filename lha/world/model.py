@@ -1,20 +1,17 @@
 """The mock cloud deployment the agents audit, generated from a seed.
 
-Nothing here is stored anywhere: the world service, a resumed run and the
-scorer all call generate_world(seed, n_hosts) and get the exact same world.
+Nothing here is stored anywhere, because the world service, a resumed run and
+the scorer all call generate_world(seed, n_hosts) and get the exact same world.
 
-Shape of a world:
-
-- hosts host-1 .. host-N. The agents start knowing only host-1..host-3.
-- every hidden host is mentioned in a document on another host, so the
-  hosts form a tree rooted at the starting hosts.
-- the drifted service sits on the single deepest host, at the end of a
-  chain of documents that starts at one of the deepest *other* hosts.
-  Discovery works breadth-first, so the chain can only be entered after
-  most of the network has been explored.
-- registry.json on host-1 lists the expected replica count of every service.
-- a few healthy services are decoys: a discovery read returns a stale count.
-- one document mentions a host that doesn't exist (a dead reference).
+The hosts are host-1 to host-N, and the agents start knowing only host-1 to
+host-3. Every hidden host is mentioned in a document on another host, so the
+hosts form a tree that starts at the starting hosts. The drifted service sits
+on the single deepest host, at the end of a chain of documents that starts at
+one of the deepest *other* hosts, and because discovery works breadth-first
+the chain can only be entered after most of the network has been explored.
+registry.json on host-1 lists the expected replica count of every service, a
+few healthy services are decoys (a discovery read returns a stale count), and
+one document mentions a host that doesn't exist, which is a dead reference.
 """
 
 import json
@@ -77,8 +74,8 @@ def generate_world(seed: int, n_hosts: int = 20) -> World:
     for h in START_HOSTS:
         world.depth[h] = 0
 
-    # First the bulk of the network: every other hidden host hangs off a
-    # host at depth <= 2, so these hosts are 1-3 hops from the start.
+    # First the bulk of the network, where every other hidden host hangs off
+    # a host at depth <= 2, so these hosts are 1-3 hops from the start.
     chain, others = hidden[:CHAIN_LENGTH], hidden[CHAIN_LENGTH:]
     for host in others:
         candidates = [h for h, d in world.depth.items() if d <= 2]
@@ -87,7 +84,7 @@ def generate_world(seed: int, n_hosts: int = 20) -> World:
         world.depth[host] = world.depth[parent] + 1
 
     # Then the chain that leads to the drift. It starts at one of the deepest
-    # hosts above, so breadth-first discovery reaches it last:
+    # hosts above, so breadth-first discovery reaches it last.
     #   deepest host -> c1 -> c2 -> drift host
     deepest = max(world.depth.values())
     parent = rng.choice(sorted(h for h, d in world.depth.items() if d == deepest))
@@ -110,14 +107,14 @@ def generate_world(seed: int, n_hosts: int = 20) -> World:
             world.services[name] = Service(name, host, expected, expected)
             world.hosts[host].append(name)
 
-    # The drift: one service on the deepest host runs the wrong count.
+    # The drift, which is one service on the deepest host running the wrong count.
     drift_name = rng.choice(world.hosts[drift_host])
     s = world.services[drift_name]
     wrong = rng.choice([n for n in range(1, s.expected + 3) if n != s.expected])
     world.services[drift_name] = Service(s.name, s.host, s.expected, wrong)
     world.drift_service = drift_name
 
-    # Decoys: healthy services whose first (discovery) read is stale.
+    # Decoys, which are healthy services whose first (discovery) read is stale.
     healthy = sorted(n for n in world.services if n != drift_name)
     for name in rng.sample(healthy, N_DECOYS):
         expected = world.services[name].expected
@@ -133,7 +130,7 @@ def generate_world(seed: int, n_hosts: int = 20) -> World:
             world.documents[host]["notes.md"] = f"Notes for {host}: nothing unusual this week."
     world.documents[REGISTRY_HOST][REGISTRY_DOC] = json.dumps(world.registry(), indent=2)
 
-    # A dead reference: a document names a host that doesn't exist.
+    # A dead reference, meaning a document names a host that doesn't exist.
     dead = f"host-{n_hosts + rng.randint(10, 99)}"
     target = rng.choice([h for h in all_hosts if h not in (*chain, REGISTRY_HOST)])
     world.documents[target]["migration.md"] = f"{dead} was decommissioned last quarter."
