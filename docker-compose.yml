@@ -1,5 +1,6 @@
 # `docker compose up` starts Postgres and then one full run of the system,
 # and `docker compose run --rm lha --domain research` runs anything else.
+# `docker compose up dashboard` serves the live dashboard on port 8000, and
 # `just db-up` starts only Postgres, for running the code on the host.
 services:
   db:
@@ -25,3 +26,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  dashboard:
+    build: .
+    entrypoint: ["uv", "run", "--no-sync", "python", "-m", "lha.dashboard", "--host", "0.0.0.0"]
+    command: []
+    environment:
+      DATABASE_URL: postgresql+asyncpg://lha:lha@db:5432/lha
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["dashboard"]  # only started when asked for, so `docker compose up` stays one run

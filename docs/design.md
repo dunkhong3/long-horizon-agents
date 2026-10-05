@@ -38,7 +38,7 @@ This is not the only task the system runs, because the general parts (the tables
 
 ## Scope
 
-The `v1` tag in the repository marks the first core that was built end to end, which is the mock network with its seeded world and faults, the tables with task claiming, leases and fencing, the `ContextPacket` builder, three agents with fake models, verification by two agreeing reads, retries and replanning, the goal check, the reporter, the scorer, and `--kill-at` with `--resume`. Since then the system has gained a benchmark against a naive agent, a circuit breaker per host, stall detection that re-opens work that was put off, the coordinator as its own process with automatic restarts and an advisory lock, injected crashes of workers and of the coordinator, splitting of tasks too big for one attempt, a tool that fetches an earlier raw output by its pointer, the 'find all drifts' goal, documents served in pages, `LISTEN/NOTIFY` instead of polling, a plan split between several coordinators, a benchmark of all of this at scale, migrations with Alembic, a one-command docker compose, and a core that knows nothing about the audit, with the research brief as a second domain on it. Everything in this document describes the code as it is now.
+The `v1` tag in the repository marks the first core that was built end to end, which is the mock network with its seeded world and faults, the tables with task claiming, leases and fencing, the `ContextPacket` builder, three agents with fake models, verification by two agreeing reads, retries and replanning, the goal check, the reporter, the scorer, and `--kill-at` with `--resume`. Since then the system has gained a benchmark against a naive agent, a circuit breaker per host, stall detection that re-opens work that was put off, the coordinator as its own process with automatic restarts and an advisory lock, injected crashes of workers and of the coordinator, splitting of tasks too big for one attempt, a tool that fetches an earlier raw output by its pointer, the 'find all drifts' goal, documents served in pages, `LISTEN/NOTIFY` instead of polling, a plan split between several coordinators, a benchmark of all of this at scale, migrations with Alembic, a one-command docker compose, a live dashboard, and a core that knows nothing about the audit, with the research brief as a second domain on it. Everything in this document describes the code as it is now.
 
 Some things are designed but not built, and they are named where they come up. A search of `lha/` finds no code for `depends_on` between tasks planned ahead of their inputs, for running the processes on more than one machine, or for a real model, and every model in this repository is a fake one.
 
@@ -406,6 +406,10 @@ There are three roles. A reader reads one source and reports every claim and eve
 
 Everything else comes from the core unchanged, which includes the seeded faults, the retries, the breaker per source, splitting nothing (the research brief has no task too big for one attempt), stall detection with its own re-open rule (`lha/domains/research/rules.py`, lines 161–180), crashes, `--kill-at` with `--resume`, and several coordinators. A run takes about 200–225 steps and 6–8 seconds for either goal, because the first project's answer is at the end of the chain whichever goal is chosen, and it passes across the seeds and fault rates we tried, including a 40% fault rate with injected crashes and two coordinators. CI runs it with the 'all' goal on every push, and `tests/test_research.py` checks the library, the settle rule and the word-for-word check.
 
+## The dashboard
+
+The dashboard is a small web page for watching runs as they happen, and it is its own process that only reads Postgres, so it can be started before, during or after a run and it shows any session of either domain (`lha/dashboard.py`). It follows the same rule as the rest of the system, which is that a view is worked out again from the tables every time and never from an earlier view, so each request counts the tasks of each type by status, the facts by status, the steps per second since the session started, the breakers that are not closed and the latest 25 decisions with their reasons, and adds the same progress line the supervisor prints (`lha/dashboard.py`, lines 32–133). The page itself is one HTML file with no outside libraries, which asks for a fresh view once a second and draws the steps as a line (`lha/dashboard.html`, lines 83–111). It asks every second instead of listening for notifications because a view of a few small `GROUP BY` queries is cheap, and polling keeps the dashboard independent of the trigger that the workers and coordinators rely on. `just dashboard` starts it on port 8000, and `docker compose up dashboard` starts it next to the Postgres in docker compose.
+
 ## Layout
 
 ```
@@ -436,6 +440,7 @@ lha/
                    each has world.py, app.py, tools.py, tasks.py, facts.py,
                    agents.py, rules.py and the Domain in __init__.py
   run.py           supervisor + CLI
+  dashboard.py     the live dashboard (with dashboard.html)
   baseline.py      the naive full-history agent we compare against
   bench.py         runs the system and the baseline on the same worlds
   scale.py         one big world with more and more workers and coordinators

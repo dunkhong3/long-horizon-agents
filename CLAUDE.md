@@ -25,6 +25,7 @@ just fmt       # auto-fix
 just test      # pytest (needs Postgres)
 just start     # run the system (--domain audit or research)
 just up        # Postgres and one full run, both in docker compose
+just dashboard # a live view of every run, on port 8000
 just migrate   # upgrade the schema; `just migrate revision "msg"` writes a new one
 just demo      # full run + crash at step 120 + resume
 just bench     # the system against a naive full-history baseline

@@ -77,11 +77,12 @@ just start --resume                   # ...and resume from Postgres
 just demo                             # a full run, then a crash at step 120 and a resume
 just bench                            # the system against a naive full-history agent (~6 min)
 just scale                            # one big world with more workers and coordinators (~3 min)
+just dashboard                        # a live view of every run, on http://localhost:8000
 just start --domain research --goal all  # the second domain, a research brief
 just start --seed 7 --hosts 200 --goal all --step-budget 50000 --coordinators 4 --workers 8,8
 ```
 
-Without `just`, the same run is `uv sync && uv run python -m lha.run --seed 42`, but then `.env` is not loaded, so `DATABASE_URL` has to be exported in the shell if it isn't the default. A step is one model call or one tool call, and `--seed` fixes the network, the faults and the injected crashes, so the same seed gives the same faults and the same result. Each run writes `runs/<session>/finding.md` and `score.json`.
+Without `just`, the same run is `uv sync && uv run python -m lha.run --seed 42`, but then `.env` is not loaded, so `DATABASE_URL` has to be exported in the shell if it isn't the default. A step is one model call or one tool call, and `--seed` fixes the network, the faults and the injected crashes, so the same seed gives the same faults and the same result. Each run writes `runs/<session>/finding.md` and `score.json`. To watch a run as it happens, start `just dashboard` in a second terminal (or `docker compose up dashboard`) and open `http://localhost:8000`, which shows the progress line, the steps over time, the tasks of each type by status, the facts by status, any open circuit breakers, the coordinator's latest decisions with their reasons, and the report once it is written (`lha/dashboard.py`).
 
 ## Sample output
 

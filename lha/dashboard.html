@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lha dashboard</title>
+<style>
+  :root { --bg: #fafafa; --fg: #1d1d1f; --muted: #6e6e73; --card: #fff; --line: #e3e3e6;
+          --accent: #2f6fde; --good: #1f8a4c; --bad: #c4362c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161618; --fg: #ececf0; --muted: #9a9aa2; --card: #212124; --line: #34343a;
+            --accent: #6ea0ff; --good: #4cc282; --bad: #ff6b5e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 12px;
+           align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  select { font: inherit; padding: 4px 6px; max-width: 100%; background: var(--card); color: var(--fg);
+           border: 1px solid var(--line); border-radius: 6px; }
+  main { padding: 16px; display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+            min-width: 0; overflow-x: auto; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td.reason { white-space: normal; }
+  .muted { color: var(--muted); }
+  .status-succeeded { color: var(--good); } .status-failed { color: var(--bad); }
+  .status-running { color: var(--accent); }
+  code { font-size: 12px; }
+  svg { width: 100%; height: 160px; display: block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>lha dashboard</h1>
+  <select id="pick" aria-label="session"></select>
+  <span id="status" class="muted"></span>
+</header>
+<main>
+  <section class="wide"><h2>Progress</h2><div id="progress" class="muted">waiting for a session</div>
+    <div id="meta" class="muted"></div></section>
+  <section class="wide"><h2>Steps over time</h2><div id="chartnote" class="muted"></div><svg id="chart" viewBox="0 0 600 160"
+    preserveAspectRatio="none"></svg></section>
+  <section class="wide"><h2>Tasks</h2><div id="tasks"></div></section>
+  <section><h2>Facts</h2><div id="facts"></div><h2 style="margin-top:12px">Open breakers</h2>
+    <div id="breakers"></div></section>
+  <section class="wide"><h2>Recent decisions</h2><div id="decisions"></div></section>
+  <section class="wide"><h2>Report</h2><div id="report" class="muted">not written yet</div></section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+let chosen = null;
+const STATUSES = ["ready", "leased", "submitted", "succeeded", "failed", "split", "cancelled"];
+
+async function refreshList() {
+  const list = await (await fetch("/api/sessions")).json();
+  const pick = $("pick");
+  if (!chosen && list.length) chosen = list[0].id;
+  pick.innerHTML = list.map((s) =>
+    `<option value="${s.id}" ${s.id === chosen ? "selected" : ""}>${esc(s.domain)} seed ${s.seed} ` +
+    `goal ${esc(s.goal_kind)}, ${esc(s.status)}, ${new Date(s.created_at).toLocaleTimeString()}</option>`).join("");
+}
+
+function table(head, rows) {
+  return `<table><tr>${head.map((h) => `<th>${esc(h)}</th>`).join("")}</tr>` +
+    rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("") + "</table>";
+}
+
+function chart(points, budget) {
+  if (!points.length) { $("chart").innerHTML = ""; $("chartnote").textContent = ""; return; }
+  const maxX = Math.max(points[points.length - 1][0], 1), maxY = Math.max(points[points.length - 1][1], 1);
+  const path = points.map(([x, y], i) => `${i ? "L" : "M"}${(x / maxX * 590 + 5).toFixed(1)},${(155 - y / maxY * 145).toFixed(1)}`).join("");
+  $("chart").innerHTML = `<path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2"
+    vector-effect="non-scaling-stroke"/>`;
+  $("chartnote").textContent = `${maxY} steps in ${maxX.toFixed(0)} s, with a budget of ${budget}`;
+}
+
+async function refreshSession() {
+  if (!chosen) return;
+  const r = await fetch(`/api/sessions/${chosen}`);
+  if (!r.ok) return;
+  const v = await r.json(), s = v.session;
+  $("status").innerHTML = `<span class="status-${esc(s.status)}">${esc(s.status)}</span>`;
+  $("progress").textContent = v.progress;
+  $("meta").textContent = `${s.domain} | seed ${s.seed} | size ${s.size} | fault rate ${s.fault_rate} | ` +
+    `${s.partitions} coordinator(s) | ${s.goal}`;
+  chart(v.timeline, s.step_budget);
+  $("tasks").innerHTML = table(["type", ...STATUSES], Object.entries(v.tasks).map(([t, by]) =>
+    [`<code>${esc(t)}</code>`, ...STATUSES.map((st) => by[st] ?? '<span class="muted">0</span>')]));
+  $("facts").innerHTML = table(["status", "facts"], Object.entries(v.facts).map(([st, n]) => [esc(st), n]));
+  $("breakers").innerHTML = v.breakers.length
+    ? table(["resource", "state", "failures"], v.breakers.map((b) => [esc(b.resource), esc(b.state), b.failures ?? ""]))
+    : '<span class="muted">none</span>';
+  $("decisions").innerHTML = table(["time", "action", "task", "reason"], v.decisions.map((d) =>
+    [new Date(d.at).toLocaleTimeString(), esc(d.action), `<code>${esc(d.task_key ?? "")}</code>`,
+     `<span class="muted">${esc(d.reason)}</span>`]));
+  $("report").innerHTML = s.report?.summary
+    ? `<pre style="white-space:pre-wrap;margin:0">${esc(s.report.summary)}</pre>` : "not written yet";
+}
+
+$("pick").addEventListener("change", (e) => { chosen = e.target.value; refreshSession(); });
+async function tick() {
+  try { await refreshList(); await refreshSession(); } catch (e) { $("status").textContent = "cannot reach the dashboard"; }
+}
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

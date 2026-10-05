@@ -43,6 +43,10 @@ test *args:
 start *args:
     uv run python -m lha.run {{args}}
 
+# a live view of the runs in Postgres, on http://localhost:8000
+dashboard *args:
+    uv run python -m lha.dashboard {{args}}
+
 # a full run, then a crash at step 120 and a resume
 demo:
     uv run python -m lha.run --seed 42
