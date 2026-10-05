@@ -7,12 +7,14 @@ current at a time.
 
 # Fact keys.
 EXISTS = "exists"  # host:<h> -> true / false
+LISTING = "listing"  # host:<h> -> {"services": [...], "documents": [...]}, as the host listed them
 UNREACHABLE = "unreachable"  # host:<h> -> true after repeated failures
 REPLICAS = "config.replicas"  # service:<s>@<h> -> int (a read)
 MENTIONS = "mentions"  # doc:<name>@<h> -> [hosts]
 EXPECTED = "replicas"  # registry:<s> -> int
 DRIFT = "drift.replicas"  # service:<s>@<h> -> {"expected", "actual"} (a claim)
 VERDICT = "verdict"  # service:<s>@<h> -> "match" after a clean compare
+BREAKER = "breaker"  # host:<h> -> {"state", "failures", "open_until"}
 
 # Fact statuses.
 OBSERVED = "observed"
@@ -36,3 +38,9 @@ def doc_subject(name: str, host: str) -> str:
 
 def registry_subject(service: str) -> str:
     return f"registry:{service}"
+
+
+def split_service_subject(subject: str) -> tuple[str, str]:
+    """'service:cache@host-4' -> ('cache', 'host-4')"""
+    service, host = subject.removeprefix("service:").split("@")
+    return service, host

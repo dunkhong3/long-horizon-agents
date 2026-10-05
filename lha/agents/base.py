@@ -23,8 +23,8 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from lha.config import MODEL_ERROR_RATE
-from lha.context import estimate_tokens
+from lha.config import CONTEXT_WINDOW_TOKENS, MODEL_ERROR_RATE, OUTPUT_RESERVE_TOKENS
+from lha.context import ContextOverflow, estimate_tokens
 from lha.faults import roll
 from lha.schemas.context import ContextPacket
 from lha.tools import ToolBox
@@ -71,13 +71,20 @@ Fabricate = Callable[[dict[str, Any]], dict[str, Any] | None]
 
 
 def tool_results(messages: list[ModelMessage]) -> list[tuple[str, Any]]:
+    """(tool, result) pairs so far, where a fetched pointer counts as the tool it copies."""
     return [
-        (part.tool_name, part.content)
+        (_tool_of(part), part.content)
         for msg in messages
         if isinstance(msg, ModelRequest)
         for part in msg.parts
         if isinstance(part, ToolReturnPart)
     ]
+
+
+def _tool_of(part: ToolReturnPart) -> str:
+    if isinstance(part.content, dict) and "_of" in part.content:
+        return part.content["_of"]
+    return part.tool_name
 
 
 def prompt_tokens(messages: list[ModelMessage]) -> int:
@@ -111,6 +118,11 @@ def scripted_model(ctx: AgentContext, policy: Policy, fabricate: Fabricate) -> F
     """
 
     async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        tokens = prompt_tokens(messages)
+        if tokens > CONTEXT_WINDOW_TOKENS - OUTPUT_RESERVE_TOKENS:
+            # The attempt's own tool results have filled the window, so the
+            # task is too big for one attempt and the coordinator splits it.
+            raise ContextOverflow(f"the attempt needs {tokens} tokens")
         decision = policy(ctx.packet, tool_results(messages))
         corrupted = None
         if isinstance(decision, Final):
@@ -126,7 +138,7 @@ def scripted_model(ctx: AgentContext, policy: Policy, fabricate: Fabricate) -> F
         else:
             part = ToolCallPart(decision.tool, decision.args)
             summary = {"tool": decision.tool, "args": decision.args}
-        summary["prompt_tokens"] = prompt_tokens(messages)
+        summary["prompt_tokens"] = tokens
         await ctx.log("model_call", {**summary, "corrupted": corrupted})
         return ModelResponse(parts=[part])
 

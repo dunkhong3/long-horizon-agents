@@ -18,14 +18,17 @@ from uuid import UUID
 
 import httpx
 from pydantic_ai.exceptions import UnexpectedModelBehavior
+from sqlalchemy import select
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from lha.agents import analysis, discovery, reporter
 from lha.agents.base import AgentContext
-from lha.config import HEARTBEAT_SECONDS, POLL_SECONDS
+from lha.config import HEARTBEAT_SECONDS, LEASE_SECONDS, POLL_SECONDS
 from lha.context import ContextOverflow, build_packet
 from lha.db import crud, make_engine
+from lha.db.models import events
+from lha.faults import roll
 from lha.tools import ToolBox, ToolFailure
 
 AGENTS = {
@@ -90,6 +93,15 @@ class Worker:
             with contextlib.suppress(asyncio.CancelledError):
                 await beat
 
+        crash = self._injected_crash(task)
+        if crash is not None:
+            await self._log(task, "crash_injected", {"kind": crash})
+            if crash == "exit":
+                os._exit(1)  # die holding the lease, which the supervisor then expires
+            # 'hang': stay alive but silent past the lease, like a stuck process,
+            # and then try to submit as if nothing happened.
+            await asyncio.sleep(LEASE_SECONDS + 2 * HEARTBEAT_SECONDS)
+
         async with self.engine.begin() as conn:
             accepted = await crud.submit_result(conn, task.id, self.name, task.attempt, result)
         if not accepted:
@@ -97,6 +109,16 @@ class Worker:
             # it was cancelled) while we were finishing, so our result is stale
             # and we drop it.
             await self._log(task, "lease_lost", {"reason": "submit fenced out"})
+
+    def _injected_crash(self, task: Row) -> str | None:
+        """A seeded crash after the work is done and before it is submitted (see --crashes)."""
+        r = roll(self.session.seed, "worker", task.task_key, task.attempt)
+        rate = self.session.crash_rate
+        if r < rate / 2:
+            return "exit"
+        if r < rate:
+            return "hang"
+        return None
 
     async def _heartbeat(self, task: Row, work: asyncio.Task) -> None:
         while True:
@@ -113,6 +135,24 @@ class Worker:
         async def log(kind: str, payload: dict[str, Any]) -> UUID:
             return await self._log(task, kind, payload)
 
+        async def load(event_id: str) -> dict[str, Any] | None:
+            """A successful tool call this task may reuse (see crud.earlier_reads)."""
+            try:
+                eid = UUID(event_id)
+            except ValueError:
+                return None
+            async with self.engine.connect() as conn:
+                q = select(events.c.payload).where(
+                    events.c.id == eid,
+                    events.c.session_id == self.session_id,
+                    events.c.kind == "tool_call",
+                    await crud.earlier_reads(conn, task),
+                )
+                payload = (await conn.execute(q)).scalar_one_or_none()
+            if payload is None or not payload.get("ok") or payload["tool"] == "fetch_pointer":
+                return None
+            return payload
+
         try:
             async with self.engine.connect() as conn:
                 packet = await build_packet(conn, self.session, task)
@@ -124,7 +164,7 @@ class Worker:
                 task_type=task.type,
                 attempt=task.attempt,
                 packet=packet,
-                tools=ToolBox(self.http, task.task_key, task.attempt, log),
+                tools=ToolBox(self.http, task.task_key, task.attempt, log, load),
                 log=log,
             )
             output = await AGENTS[task.type](ctx)

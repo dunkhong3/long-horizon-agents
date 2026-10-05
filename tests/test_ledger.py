@@ -5,21 +5,9 @@ import asyncio
 import pytest
 
 from lha.db import crud
-from lha.db.models import sessions
 from lha.ids import uuid7
 from lha.schemas.tasks import DiscoverInput
-
-
-async def new_session(engine):
-    sid = uuid7()
-    async with engine.begin() as conn:
-        await conn.execute(
-            sessions.insert().values(
-                id=sid, seed=1, n_hosts=20, fault_rate=0.0, step_budget=100,
-                goal="test", start_hosts=[], status="running",
-            )
-        )  # fmt: skip
-    return sid
+from tests.conftest import new_session
 
 
 async def test_task_creation_is_idempotent(engine):

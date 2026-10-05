@@ -12,6 +12,10 @@ the chain can only be entered after most of the network has been explored.
 registry.json on host-1 lists the expected replica count of every service, a
 few healthy services are decoys (a discovery read returns a stale count), and
 one document mentions a host that doesn't exist, which is a dead reference.
+Two more hosts make trouble on purpose. The wide host runs so many services
+that reading them all does not fit in one attempt's context window, so its
+discovery has to be split, and the outage host is down for every task of the
+first round, so the circuit breaker opens for it.
 """
 
 import json
@@ -23,6 +27,7 @@ REGISTRY_HOST = "host-1"
 REGISTRY_DOC = "registry.json"
 CHAIN_LENGTH = 3  # extra hops below the deepest other host to reach the drift
 N_DECOYS = 3
+WIDE_SERVICES = 40  # services on the one 'wide' host, too many to read in one attempt
 
 SERVICE_NAMES = (
     "payments", "search", "cache", "auth", "billing", "queue", "mailer",
@@ -30,7 +35,15 @@ SERVICE_NAMES = (
     "shipping", "pricing", "catalog", "reviews", "notify", "sessions",
     "analytics", "recommend", "upload", "thumbnail", "geo", "chat", "feed",
     "audit", "export", "scheduler", "webhooks", "ratelimit", "tokens", "config",
-    "flags", "backup", "logs", "tracing", "dns", "proxy",
+    "flags", "backup", "logs", "tracing", "dns", "proxy", "storage", "indexer",
+    "crawler", "ranker", "translate", "speech", "video", "stream", "player",
+    "cart", "checkout", "coupons", "loyalty", "refunds", "invoices", "tax",
+    "fraud", "risk", "kyc", "ledger-sync", "payouts", "fx", "quotes", "alerts",
+    "oncall", "status", "docs", "wiki", "builds", "deploys", "secrets", "vault",
+    "certs", "mesh", "edge", "cdn", "waf", "billing-api", "usage", "quota",
+    "teams", "invites", "sso", "scim", "avatars", "emails", "sms", "push",
+    "webrtc", "maps", "routing", "eta", "weather", "calendar", "contacts",
+    "files", "sync", "trash", "versions", "share",
 )  # fmt: skip
 
 
@@ -50,20 +63,27 @@ class World:
     services: dict[str, Service] = field(default_factory=dict)  # name -> service
     documents: dict[str, dict[str, str]] = field(default_factory=dict)  # host -> name -> text
     decoys: dict[str, int] = field(default_factory=dict)  # service -> stale count
-    drift_service: str = ""
+    drift_services: list[str] = field(default_factory=list)  # the deepest one first
     depth: dict[str, int] = field(default_factory=dict)  # host -> hops from start
+    wide_host: str = ""  # has WIDE_SERVICES services
+    outage_host: str = ""  # down for every first-round task
 
     @property
     def drift(self) -> Service:
-        return self.services[self.drift_service]
+        """The drift at the end of the chain, which is the only one when one is planted."""
+        return self.services[self.drift_services[0]]
+
+    @property
+    def drifts(self) -> list[Service]:
+        return [self.services[name] for name in self.drift_services]
 
     def registry(self) -> dict[str, int]:
         return {name: s.expected for name, s in sorted(self.services.items())}
 
 
-def generate_world(seed: int, n_hosts: int = 20) -> World:
-    if n_hosts < len(START_HOSTS) + CHAIN_LENGTH + 2:
-        raise ValueError(f"need at least {len(START_HOSTS) + CHAIN_LENGTH + 2} hosts")
+def generate_world(seed: int, n_hosts: int = 20, n_drifts: int = 1) -> World:
+    if n_hosts < len(START_HOSTS) + CHAIN_LENGTH + 4:
+        raise ValueError(f"need at least {len(START_HOSTS) + CHAIN_LENGTH + 4} hosts")
     rng = random.Random(f"world|{seed}|{n_hosts}")
     world = World(seed=seed, n_hosts=n_hosts)
 
@@ -87,19 +107,27 @@ def generate_world(seed: int, n_hosts: int = 20) -> World:
     # hosts above, so breadth-first discovery reaches it last.
     #   deepest host -> c1 -> c2 -> drift host
     deepest = max(world.depth.values())
-    parent = rng.choice(sorted(h for h, d in world.depth.items() if d == deepest))
+    parent = chain_parent = rng.choice(sorted(h for h, d in world.depth.items() if d == deepest))
     for host in chain:
         children[parent].append(host)
         world.depth[host] = world.depth[parent] + 1
         parent = host
     drift_host = chain[-1]
 
+    # Two hosts with a problem of their own, picked away from the chain so
+    # the drift stays where it is. The wide host runs too many services to
+    # read in one attempt, and the outage host is down for the first round.
+    # The outage host is a leaf, so no other host is only reachable through it.
+    special = sorted((h for h in others if h != chain_parent), key=_host_number)
+    world.outage_host = rng.choice([h for h in special if not children[h]])
+    world.wide_host = rng.choice([h for h in special if h != world.outage_host])
+
     # --- services -------------------------------------------------------
     names = list(SERVICE_NAMES)
     rng.shuffle(names)
     all_hosts = [*START_HOSTS, *sorted(hidden, key=_host_number)]
     for host in all_hosts:
-        count = rng.randint(1, 3)
+        count = WIDE_SERVICES if host == world.wide_host else rng.randint(1, 3)
         world.hosts[host] = []
         for _ in range(count):
             name = names.pop() if names else f"svc-{len(world.services)}"
@@ -107,15 +135,18 @@ def generate_world(seed: int, n_hosts: int = 20) -> World:
             world.services[name] = Service(name, host, expected, expected)
             world.hosts[host].append(name)
 
-    # The drift, which is one service on the deepest host running the wrong count.
-    drift_name = rng.choice(world.hosts[drift_host])
-    s = world.services[drift_name]
-    wrong = rng.choice([n for n in range(1, s.expected + 3) if n != s.expected])
-    world.services[drift_name] = Service(s.name, s.host, s.expected, wrong)
-    world.drift_service = drift_name
+    # The drift, which is one service on the deepest host running the wrong
+    # count, and for the 'find all drifts' goal a few more anywhere else.
+    world.drift_services.append(rng.choice(world.hosts[drift_host]))
+    elsewhere = sorted(n for n, s in world.services.items() if s.host != drift_host)
+    world.drift_services += rng.sample(elsewhere, n_drifts - 1)
+    for name in world.drift_services:
+        s = world.services[name]
+        wrong = rng.choice([n for n in range(1, s.expected + 3) if n != s.expected])
+        world.services[name] = Service(s.name, s.host, s.expected, wrong)
 
     # Decoys, which are healthy services whose first (discovery) read is stale.
-    healthy = sorted(n for n in world.services if n != drift_name)
+    healthy = sorted(n for n in world.services if n not in world.drift_services)
     for name in rng.sample(healthy, N_DECOYS):
         expected = world.services[name].expected
         world.decoys[name] = rng.choice([n for n in range(1, expected + 3) if n != expected])

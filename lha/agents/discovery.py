@@ -17,29 +17,42 @@ HOST_NAME = re.compile(r"\bhost-\d+\b")
 
 
 def policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Call | Final:
-    host = packet.pinned.input["host"]
+    inp = packet.pinned.input
+    host = inp["host"]
+    # Raw outputs of earlier attempts, by path, which are fetched from
+    # Postgres by pointer instead of being read from the network again.
+    earlier = {p.path: p.id for p in packet.pointers}
+
+    def call(tool: str, path: str, args: dict[str, Any]) -> Call:
+        if path in earlier:
+            return Call("fetch_pointer", {"event_id": earlier[path]})
+        return Call(tool, args)
+
     if not results:
-        return Call("get_host", {"host": host})
+        return call("get_host", f"/hosts/{host}", {"host": host})
 
     info = results[0][1]
     reads = {r["service"]: r for name, r in results if name == "get_service"}
     docs = {r["name"]: r for name, r in results if name == "fetch_document"}
+    # A batch of a split discovery reads only its own services, and only
+    # the first batch reads the documents.
+    services = inp["services"] if inp.get("services") is not None else info["services"]
+    documents = info["documents"] if inp.get("part", 0) <= 1 else []
 
     # One call at a time, first every service and then every document.
-    for service in info["services"]:
+    for service in services:
         if service not in reads:
-            return Call("get_service", {"host": host, "service": service})
-    for doc in info["documents"]:
+            path = f"/hosts/{host}/services/{service}"
+            return call("get_service", path, {"host": host, "service": service})
+    for doc in documents:
         if doc not in docs:
-            return Call("fetch_document", {"host": host, "name": doc})
+            return call("fetch_document", f"/hosts/{host}/documents/{doc}", {"host": host, "name": doc})
 
-    documents = []
+    found = []
     for name, d in docs.items():
         mentions = sorted(set(HOST_NAME.findall(d["content"])) - {host})
         registry = json.loads(d["content"]) if name == REGISTRY_DOC else None
-        documents.append(
-            {"name": name, "mentions": mentions, "registry": registry, "event_id": d["event_id"]}
-        )
+        found.append({"name": name, "mentions": mentions, "registry": registry, "event_id": d["event_id"]})
     return Final(
         {
             "host": host,
@@ -47,7 +60,7 @@ def policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Call | Fina
             "services": [
                 {"service": s, "replicas": r["replicas"], "event_id": r["event_id"]} for s, r in reads.items()
             ],
-            "documents": documents,
+            "documents": found,
         }
     )
 
@@ -78,4 +91,9 @@ async def run(ctx: AgentContext) -> DiscoverOutput:
         """Read a document stored on a host."""
         return await ctx.tools.fetch_document(host, name)
 
-    return await run_agent(ctx, DiscoverOutput, policy, fabricate, [get_host, get_service, fetch_document])
+    async def fetch_pointer(event_id: str) -> dict:
+        """Fetch an earlier attempt's raw tool output by its pointer."""
+        return await ctx.tools.fetch_pointer(event_id)
+
+    tools = [get_host, get_service, fetch_document, fetch_pointer]
+    return await run_agent(ctx, DiscoverOutput, policy, fabricate, tools)

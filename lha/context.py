@@ -7,7 +7,7 @@ for this one task, within a token budget, made of four layers.
     1. pinned    goal + this task's spec            never cut
     2. facts     current facts in the task's scope  newest first
     3. recent    the last few events of this task   e.g. why the last try failed
-    4. pointers  ids of earlier raw tool outputs    payloads left out
+    4. pointers  where earlier raw tool outputs are payloads left out
 
 The packet is built from the top down, which means we add the layers in
 priority order for as long as the next item still fits. Nothing is ever cut
@@ -22,10 +22,25 @@ from sqlalchemy import or_, select
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from lha.config import CONTEXT_WINDOW_TOKENS, OUTPUT_RESERVE_TOKENS, RECENT_EVENTS
+from lha.config import (
+    CONTEXT_WINDOW_TOKENS,
+    MAX_POINTERS,
+    OUTPUT_RESERVE_TOKENS,
+    RECENT_EVENTS,
+    WORK_RESERVE_TOKENS,
+)
+from lha.db import crud
 from lha.db.models import events, facts
-from lha.schemas.context import ContextPacket, EventView, FactView, Pinned
-from lha.schemas.facts import DRIFT, REPLICAS, SUPERSEDED, VERIFIED, registry_subject
+from lha.schemas.context import ContextPacket, EventView, FactView, Pinned, PointerView
+from lha.schemas.facts import (
+    DRIFT,
+    EXPECTED,
+    REPLICAS,
+    SUPERSEDED,
+    VERIFIED,
+    registry_subject,
+    split_service_subject,
+)
 
 
 class ContextOverflow(Exception):
@@ -43,11 +58,11 @@ def pack(
     pinned: Pinned,
     fact_items: list[FactView],
     recent_items: list[EventView],
-    pointer_items: list[str],
+    pointer_items: list[PointerView],
     window: int = CONTEXT_WINDOW_TOKENS,
-    reserve: int = OUTPUT_RESERVE_TOKENS,
+    reserve: int = OUTPUT_RESERVE_TOKENS + WORK_RESERVE_TOKENS,
 ) -> ContextPacket:
-    budget = window - reserve  # leave room for the model's answer
+    budget = window - reserve  # leave room for the attempt's work and the model's answer
     used = estimate_tokens(pinned)
     if used > budget:
         # Truncating pinned would silently change what the task is.
@@ -90,7 +105,7 @@ async def build_packet(conn: AsyncConnection, session: Row, task: Row) -> Contex
         pinned,
         await _select_facts(conn, session.id, task.scope),
         await _recent_events(conn, session.id, task.id),
-        await _pointers(conn, session.id, task.id, task.attempt),
+        await _pointers(conn, session.id, task),
     )
 
 
@@ -116,8 +131,8 @@ async def _select_facts(conn: AsyncConnection, session_id: UUID, scope: list[str
         # each verified drift.
         extra = []
         for row in rows:
-            service = row.subject.removeprefix("service:").split("@")[0]
-            extra += [(registry_subject(service), "replicas"), (row.subject, REPLICAS)]
+            service, _ = split_service_subject(row.subject)
+            extra += [(registry_subject(service), EXPECTED), (row.subject, REPLICAS)]
         for subject, key in extra:
             q = select(facts).where(
                 facts.c.session_id == session_id,
@@ -152,17 +167,43 @@ async def _recent_events(conn: AsyncConnection, session_id: UUID, task_id: UUID)
     return out
 
 
-async def _pointers(conn: AsyncConnection, session_id: UUID, task_id: UUID, attempt: int) -> list[str]:
-    """Ids of raw tool outputs from earlier attempts of this task."""
+async def _pointers(conn: AsyncConnection, session_id: UUID, task: Row) -> list[PointerView]:
+    """Successful raw tool outputs this task may reuse, newest first.
+
+    Those come from its own earlier attempts, or for a batch of a split
+    discovery from the attempt that was too big (see crud.earlier_reads). Each
+    pointer says which tool and path the output came from but leaves the
+    output out, and an agent can fetch one with the fetch_pointer tool instead
+    of calling the network again. A fetched copy is not pointed at again,
+    because its original already is.
+    """
     q = (
-        select(events.c.id)
+        select(events.c.id, events.c.payload)
         .where(
             events.c.session_id == session_id,
-            events.c.task_id == task_id,
             events.c.kind == "tool_call",
-            events.c.attempt < attempt,
+            await crud.earlier_reads(conn, task),
         )
         .order_by(events.c.created_at.desc())
-        .limit(20)
     )
-    return [str(i) for i in (await conn.execute(q)).scalars()]
+    pointers: dict[str, PointerView] = {}
+    for event_id, p in (await conn.execute(q)).all():
+        if (
+            p.get("ok")
+            and p["tool"] != "fetch_pointer"
+            and p["path"] not in pointers
+            and _wanted(task, p["path"])
+        ):
+            pointers[p["path"]] = PointerView(id=str(event_id), tool=p["tool"], path=p["path"])
+    return list(pointers.values())[:MAX_POINTERS]
+
+
+def _wanted(task: Row, path: str) -> bool:
+    """Whether a batch of a split discovery would read this path, so pointers
+    for the other batches' services don't take up its budget."""
+    services = task.input.get("services")
+    if services is None:
+        return True
+    host = task.input["host"]
+    reads = {f"/hosts/{host}", *(f"/hosts/{host}/services/{s}" for s in services)}
+    return path in reads or (task.input.get("part", 0) <= 1 and path.startswith(f"/hosts/{host}/documents/"))

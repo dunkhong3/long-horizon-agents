@@ -27,6 +27,11 @@ ROLE_OF: dict[str, str] = {
 class DiscoverInput(BaseModel):
     host: str
     round: int = 1
+    # Set when a host was too big for one attempt and its discovery was split
+    # into batches, where part 1 of N also reads the documents.
+    services: list[str] | None = None
+    part: int = 0
+    parts: int = 0
 
 
 class CompareInput(BaseModel):
@@ -95,12 +100,16 @@ class VerifyOutput(BaseModel):
     event_id: str
 
 
+class Finding(BaseModel):
+    service: str
+    host: str
+    expected: int
+    actual: int
+    drift_fact_id: str  # the verified drift fact this finding rests on
+
+
 class ReportOutput(BaseModel):
-    service: str | None
-    host: str | None
-    expected: int | None
-    actual: int | None
-    drift_fact_id: str | None
+    findings: list[Finding]  # one per verified drift, possibly none
     summary: str  # markdown
 
 
@@ -119,10 +128,11 @@ def task_key(task_type: str, inp: BaseModel) -> str:
 
     It is the same in every run, so it stops the same task being created
     twice and it seeds the faults. Round 1 has no suffix, and a deliberate new
-    round of the same work gets '#n'.
+    round of the same work gets '#n'. A batch of a split discovery adds
+    '/<part>of<parts>' before the round, as in 'discover_host:host-7/2of4'.
     """
     if isinstance(inp, DiscoverInput):
-        base = f"discover_host:{inp.host}"
+        base = f"discover_host:{inp.host}" + (f"/{inp.part}of{inp.parts}" if inp.parts else "")
     elif isinstance(inp, CompareInput):
         base = f"compare_service:{inp.service}@{inp.host}"
     elif isinstance(inp, VerifyInput):
@@ -142,6 +152,10 @@ def task_scope(inp: BaseModel) -> list[str]:
     Entries are exact subjects, '*@<host>' for everything on a host, or
     'verified_drifts' for the reporter.
     """
+    if isinstance(inp, DiscoverInput) and inp.services is not None:
+        # A batch only needs its own services, which leaves room in its
+        # packet for pointers to what the too-big attempt already read.
+        return [host_subject(inp.host), *(service_subject(s, inp.host) for s in inp.services)]
     if isinstance(inp, DiscoverInput):
         return [host_subject(inp.host), f"*@{inp.host}"]
     if isinstance(inp, (CompareInput, VerifyInput)):

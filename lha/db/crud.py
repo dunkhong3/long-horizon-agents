@@ -10,7 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -120,7 +120,7 @@ CLAIM_SQL = text(
         ORDER BY created_at, id
         LIMIT 1
         FOR UPDATE SKIP LOCKED)
-    RETURNING id, task_key, type, attempt, input, scope
+    RETURNING id, task_key, parent_task_id, type, attempt, input, scope
     """
 )
 
@@ -166,6 +166,21 @@ async def submit_result(
         .returning(tasks.c.id)
     )
     return (await conn.execute(stmt)).first() is not None
+
+
+async def earlier_reads(conn: AsyncConnection, task: Row):
+    """A condition on `events` for the raw outputs a task may reuse by pointer.
+
+    Those are the outputs of its own earlier attempts and, for a batch of a
+    split discovery, the outputs of the attempt that was too big, which
+    already read part of what the batch is about to read.
+    """
+    own = (events.c.task_id == task.id) & (events.c.attempt < task.attempt)
+    if task.parent_task_id is not None:
+        q = select(tasks.c.status).where(tasks.c.id == task.parent_task_id)
+        if (await conn.execute(q)).scalar_one_or_none() == "split":
+            return or_(own, events.c.task_id == task.parent_task_id)
+    return own
 
 
 # --- facts --------------------------------------------------------------------

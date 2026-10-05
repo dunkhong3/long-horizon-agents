@@ -1,7 +1,7 @@
 """The mock world is fully determined by its seed."""
 
 from lha.faults import pick_fault, roll
-from lha.world.model import START_HOSTS, generate_world
+from lha.world.model import START_HOSTS, WIDE_SERVICES, generate_world
 
 
 def test_same_seed_same_world():
@@ -18,7 +18,19 @@ def test_drift_is_the_single_deepest_host():
         others = [d for h, d in w.depth.items() if h != w.drift.host]
         assert drift_depth > max(others)
         assert w.drift.actual != w.drift.expected
-        assert w.drift_service not in w.decoys
+        assert w.drift.name not in w.decoys
+
+
+def test_trouble_hosts_and_extra_drifts():
+    for seed in range(20):
+        w = generate_world(seed, 20, n_drifts=3)
+        assert len(w.hosts[w.wide_host]) == WIDE_SERVICES
+        assert w.wide_host != w.outage_host
+        assert w.drift.host not in (w.wide_host, w.outage_host)
+        assert "runbook.md" not in w.documents[w.outage_host]  # a leaf, so it hides no other host
+        assert len({s.name for s in w.drifts}) == 3
+        assert all(s.actual != s.expected for s in w.drifts)
+        assert not set(w.drift_services) & set(w.decoys)
 
 
 def test_every_hidden_host_is_mentioned_somewhere():

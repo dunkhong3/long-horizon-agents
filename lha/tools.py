@@ -22,6 +22,9 @@ from lha.config import TOOL_RETRIES, TOOL_RETRY_DELAY_SECONDS, TOOL_TIMEOUT_SECO
 
 # log(kind, payload) -> event id, supplied by the worker.
 EventLogger = Callable[[str, dict[str, Any]], Awaitable[UUID]]
+# load(event id) -> the payload of a successful tool call from an earlier
+# attempt of the same task, or None, also supplied by the worker.
+PointerLoader = Callable[[str], Awaitable[dict[str, Any] | None]]
 
 
 class ToolFailure(Exception):
@@ -48,11 +51,19 @@ class NotFound(ToolFailure):
 class ToolBox:
     """The tools of one task attempt, which numbers its calls 0, 1, 2 and so on."""
 
-    def __init__(self, http: httpx.AsyncClient, task_key: str, attempt: int, log: EventLogger):
+    def __init__(
+        self,
+        http: httpx.AsyncClient,
+        task_key: str,
+        attempt: int,
+        log: EventLogger,
+        load: PointerLoader | None = None,
+    ):
         self.http = http
         self.task_key = task_key
         self.attempt = attempt
         self.log = log
+        self.load = load
         self.call_no = 0
 
     async def get_host(self, host: str) -> dict[str, Any]:
@@ -65,6 +76,22 @@ class ToolBox:
     async def fetch_document(self, host: str, name: str) -> dict[str, Any]:
         path = f"/hosts/{host}/documents/{name}"
         return await self._call("fetch_document", path, ("host", "name", "content"))
+
+    async def fetch_pointer(self, event_id: str) -> dict[str, Any]:
+        """Fetch an earlier attempt's raw output by its pointer, instead of calling the network.
+
+        It reads Postgres and not the network, so it has no faults, but it is
+        logged like any tool call, with the copied response, so a fact can
+        cite it. The coordinator checks every such copy against its original.
+        """
+        original = await self.load(event_id) if self.load else None
+        if original is None:
+            raise ToolFailure("bad_pointer", event_id)
+        record = {"tool": "fetch_pointer", "path": original["path"], "call_no": self.call_no,
+                  "pointer": event_id, "of": original["tool"]}  # fmt: skip
+        self.call_no += 1
+        new_id = await self.log("tool_call", {**record, "ok": True, "response": original["response"]})
+        return {**original["response"], "event_id": str(new_id), "_of": original["tool"]}
 
     async def _call(self, tool: str, path: str, required: tuple[str, ...]) -> dict[str, Any]:
         last_failure: ToolFailure | None = None

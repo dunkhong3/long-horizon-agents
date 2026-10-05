@@ -6,7 +6,9 @@ Postgres. Every request carries three headers from the calling tool.
     X-Task-Key, X-Attempt, X-Call-No
 
 The fault middleware rolls a seeded die on those headers to decide whether
-this call fails, so faults are reproducible per seed.
+this call fails, so faults are reproducible per seed. It also plays the
+outage host, which answers 503 to every task of the first round, meaning
+every task key without a '#n' round suffix.
 """
 
 import asyncio
@@ -27,6 +29,9 @@ def create_app(world: World, fault_rate: float) -> FastAPI:
         if request.url.path == "/health":
             return await call_next(request)
         task_key = request.headers.get("x-task-key", "")
+        parts = request.url.path.split("/")
+        if len(parts) > 2 and parts[2] == world.outage_host and "#" not in task_key:
+            return JSONResponse({"detail": "host is down"}, status_code=503)
         attempt = request.headers.get("x-attempt", "0")
         call_no = request.headers.get("x-call-no", "0")
         fault = pick_fault(roll(world.seed, task_key, attempt, call_no), fault_rate)

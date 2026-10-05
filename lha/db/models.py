@@ -33,6 +33,9 @@ sessions = Table(
     Column("n_hosts", Integer, nullable=False),
     Column("fault_rate", Float, nullable=False),
     Column("step_budget", Integer, nullable=False),
+    Column("goal_kind", Text, nullable=False),  # 'one' drift or 'all' drifts
+    Column("n_drifts", Integer, nullable=False),  # how many the world plants
+    Column("crash_rate", Float, nullable=False),  # injected crashes per attempt
     Column("goal", Text, nullable=False),
     Column("start_hosts", JSONB, nullable=False),
     Column("status", Text, nullable=False),  # running | succeeded | failed
@@ -69,7 +72,7 @@ tasks = Table(
     Column("role", Text, nullable=False),
     Column("input", JSONB, nullable=False),
     Column("scope", JSONB, nullable=False),  # which facts the context builder selects
-    Column("status", Text, nullable=False),  # ready|leased|submitted|succeeded|failed|cancelled
+    Column("status", Text, nullable=False),  # ready|leased|submitted|succeeded|failed|split|cancelled
     Column("attempt", Integer, nullable=False, server_default="1"),
     Column("max_attempts", Integer, nullable=False),
     Column("leased_by", Text),

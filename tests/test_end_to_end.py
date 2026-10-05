@@ -24,6 +24,20 @@ def test_full_run_passes_under_heavy_faults():
     assert "verdict=PASS" in result.stdout
 
 
+def test_find_all_drifts_passes():
+    result = run("--seed", "104", "--goal", "all")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "found all 3 planted drifts" in result.stdout
+
+
+def test_injected_crashes_pass():
+    """Workers die or hang mid-task and the coordinator crashes mid-commit."""
+    result = run("--seed", "105", "--crashes", "0.05")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "verdict=PASS" in result.stdout
+    assert "crashes=0 " not in result.stdout
+
+
 def test_crash_then_resume_passes():
     crashed = run("--seed", "103", "--kill-at", "100")
     assert crashed.returncode == 137, crashed.stdout + crashed.stderr

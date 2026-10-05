@@ -36,15 +36,20 @@ class EventView(BaseModel):
     summary: str
 
 
+class PointerView(BaseModel):
+    """Where an earlier raw tool output is, and what it was, without the output itself."""
+
+    id: str  # the tool_call event
+    tool: str
+    path: str
+
+
 class ContextPacket(BaseModel):
     # Layers, from highest to lowest priority.
     pinned: Pinned
     facts: list[FactView]
     recent: list[EventView]
-    pointers: list[str]  # ids of raw tool-call events, payloads left out
+    pointers: list[PointerView]  # earlier raw tool outputs, payloads left out
     # What didn't fit, so the model knows the view is partial.
     omitted: dict[str, int]
     tokens: int  # estimated size of this packet
-
-    def facts_with(self, key: str) -> list[FactView]:
-        return [f for f in self.facts if f.key == key]

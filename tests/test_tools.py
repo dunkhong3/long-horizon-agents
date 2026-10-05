@@ -62,3 +62,23 @@ async def test_empty_200_is_a_failure():
     with pytest.raises(ToolFailure) as err:
         await tb._request("/hosts/host-1", call_no, ("host",))
     assert err.value.kind == "empty_response"
+
+
+async def test_fetch_pointer_copies_an_earlier_read_without_the_network():
+    log = []
+    original = {"tool": "get_host", "path": "/hosts/host-1", "response": {"host": "host-1"}}
+
+    async def load(event_id):
+        return original if event_id == "e-1" else None
+
+    tb = toolbox(1.0, log)  # every network call would fault
+    tb.load = load
+    data = await tb.fetch_pointer("e-1")
+    assert data["host"] == "host-1" and data["_of"] == "get_host"
+    assert (
+        log[0]["tool"] == "fetch_pointer"
+        and log[0]["pointer"] == "e-1"
+        and log[0]["response"] == {"host": "host-1"}
+    )
+    with pytest.raises(ToolFailure):
+        await tb.fetch_pointer("e-2")
