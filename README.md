@@ -33,20 +33,21 @@ The audit is one domain, and the core that keeps the run coherent knows nothing 
 
 ## How it is built
 
+```mermaid
+flowchart TB
+    S["Supervisor<br/>starts every process, restarts the ones that die"]
+    C["Coordinator processes, one per partition of the plan<br/>plain code that checks, retries, splits and replans"]
+    DB[("Postgres<br/>sessions · events · tasks · facts")]
+    W["Agent worker processes with fake models<br/>discovery · analysis · reporter"]
+    M["Mock network<br/>FastAPI with seeded faults"]
+    S --> C
+    S --> W
+    C <-->|"decisions, facts, follow-up tasks"| DB
+    W <-->|"claim a task, submit a result"| DB
+    W -->|"tool calls"| M
 ```
-       Supervisor (starts every process, restarts the ones that die)
-                              │
-      Coordinator processes (plain code: plan, check, retry, split, replan),
-                  one per partition of the plan
-                              │
-            Postgres tables: sessions · events · tasks · facts
-                 ▲            ▲             ▲
-           Discovery      Analysis      Reporter      ← agent worker processes,
-               │              │                         fake LLMs
-               └──── Mock network (FastAPI, randomly seeded faults)
 
-  Processes wake up on Postgres LISTEN/NOTIFY instead of polling.
-```
+Every process wakes up on Postgres `LISTEN/NOTIFY` instead of polling, and the only thing they share is the database.
 
 The two things this project goes deep on are state and context management, and failure detection and recovery. For context, every attempt at a task gets a fresh `ContextPacket`, which is a small bundle with the goal, the task and only the facts that matter for it, built from the database within a token budget (`lha/core/context.py`, lines 51–87), and within that attempt the model sees only the packet and the results of its own tool calls, so the raw log never goes into a prompt, and a task whose own work doesn't fit is split into batches. For recovery, tool failures are never silent (`lha/core/tools.py`, lines 112–141), the tasks of crashed workers are handed out again, a host that keeps failing has its work held back by a circuit breaker, a coordinator that crashes is started again, work that was put off is re-opened when the run stalls, claims are verified before they count, and failed work is retried or rerouted and never passed downstream. Workers never write facts themselves, because the coordinator checks every claimed fact against the raw tool response it cites (`lha/domains/audit/rules.py`, lines 44–74), so a made-up number or host is rejected. The whole run can be killed at any point and `--resume` carries on from the database, and no API keys are needed because the agents use deterministic fake models through Pydantic AI's `FunctionModel` (`lha/core/agent.py`, lines 110–145).
 
@@ -56,7 +57,7 @@ At scale, a world of 200 hosts finishes the 'find all drifts' goal in about 21 s
 
 ## How to run it
 
-It needs Python 3.11 or newer, [uv](https://docs.astral.sh/uv/), [just](https://github.com/casey/just), and Postgres 16. `just db-up` starts Postgres in Docker on port 5433, not the usual 5432, so it doesn't clash with another Postgres already running on the machine, and the default `DATABASE_URL` is `postgresql+asyncpg://lha:lha@localhost:5433/lha` to match (`docker-compose.yml`; `lha/db/__init__.py`, line 6). To use a Postgres you already have instead, create a user and a database in it and point `DATABASE_URL` at them, for example in a `.env` file, which `just` loads automatically. The tables are created when a run starts and there are no migrations, so after pulling a version that changed them, start from an empty database (`just db-down && just db-up`). Many workers need many connections, so for `just scale` an existing Postgres needs `max_connections` of about 300, which the docker compose one already has.
+It needs Python 3.11 or newer, [uv](https://docs.astral.sh/uv/), [just](https://github.com/casey/just), and Postgres 16. `just db-up` starts Postgres in Docker on port 5433, not the usual 5432, so it doesn't clash with another Postgres already running on the machine, and the default `DATABASE_URL` is `postgresql+asyncpg://lha:lha@localhost:5433/lha` to match (`docker-compose.yml`; `lha/db/__init__.py`, line 6). To use a Postgres you already have instead, create a user and a database in it and point `DATABASE_URL` at them, for example in a `.env` file, which `just` loads automatically. Every run brings the database to the newest schema with Alembic migrations first, so a database from an older version is upgraded in place (`lha/db/migrate.py`). With only Docker installed, `docker compose up --build` builds the image, starts Postgres and runs one full run, and `just up` does the same. Many workers need many connections, so for `just scale` an existing Postgres needs `max_connections` of about 300, which the docker compose one already has.
 
 ```bash
 psql -c "CREATE USER lha WITH PASSWORD 'lha';" -c "CREATE DATABASE lha OWNER lha;"
@@ -64,6 +65,7 @@ echo 'DATABASE_URL=postgresql+asyncpg://lha:lha@localhost:5432/lha' > .env
 ```
 
 ```bash
+just up                               # Postgres and one full run, both in Docker
 just install && just db-up
 just test                             # unit tests + full runs + crashes + resume
 just start --seed 42                  # full run, prints PASS/FAIL (~10 s)

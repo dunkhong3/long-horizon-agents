@@ -38,3 +38,10 @@ jobs:
         run: uv run python -m lha.bench --seeds 1 --hosts 20
       - name: Research brief, the second domain
         run: uv run python -m lha.run --domain research --seed 42 --goal all --quiet
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Postgres and one full run with docker compose
+        run: docker compose up --build --exit-code-from lha

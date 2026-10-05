@@ -11,7 +11,15 @@ install:
 
 # start Postgres with Docker, on port 5433
 db-up:
-    docker compose up -d --wait
+    docker compose up -d --wait db
+
+# Postgres and one full run, both in Docker
+up:
+    docker compose up --build --exit-code-from lha
+
+# bring the database to the newest schema (every run also does this)
+migrate *args:
+    uv run python -m lha.db.migrate {{args}}
 
 # stop Postgres and delete its data
 db-down:

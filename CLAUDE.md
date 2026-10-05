@@ -14,7 +14,7 @@ Every doc, note and code comment follows the owner's writing style. It is narrat
 
 ## Stack
 
-The stack is Python 3.11, uv, just, Pydantic and Pydantic AI (for the agents only, and not pydantic-graph, because the coordination is our own code, explicit and testable), FastAPI (for the mock network service), SQLAlchemy async with asyncpg, Postgres 16, asyncio, pytest and ruff.
+The stack is Python 3.11, uv, just, Pydantic and Pydantic AI (for the agents only, and not pydantic-graph, because the coordination is our own code, explicit and testable), FastAPI (for the mock network service), SQLAlchemy async with asyncpg, Alembic (for migrations), Postgres 16, asyncio, pytest and ruff.
 
 ## Commands
 
@@ -23,7 +23,9 @@ just install   # uv sync + install git hooks
 just check     # ruff format --check + ruff check
 just fmt       # auto-fix
 just test      # pytest (needs Postgres)
-just start     # run the system
+just start     # run the system (--domain audit or research)
+just up        # Postgres and one full run, both in docker compose
+just migrate   # upgrade the schema; `just migrate revision "msg"` writes a new one
 just demo      # full run + crash at step 120 + resume
 just bench     # the system against a naive full-history baseline
 just scale     # one big world with more workers and coordinators

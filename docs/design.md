@@ -38,7 +38,7 @@ This is not the only task the system runs, because the general parts (the tables
 
 ## Scope
 
-The `v1` tag in the repository marks the first core that was built end to end, which is the mock network with its seeded world and faults, the tables with task claiming, leases and fencing, the `ContextPacket` builder, three agents with fake models, verification by two agreeing reads, retries and replanning, the goal check, the reporter, the scorer, and `--kill-at` with `--resume`. Since then the system has gained a benchmark against a naive agent, a circuit breaker per host, stall detection that re-opens work that was put off, the coordinator as its own process with automatic restarts and an advisory lock, injected crashes of workers and of the coordinator, splitting of tasks too big for one attempt, a tool that fetches an earlier raw output by its pointer, the 'find all drifts' goal, documents served in pages, `LISTEN/NOTIFY` instead of polling, a plan split between several coordinators, a benchmark of all of this at scale, and a core that knows nothing about the audit, with the research brief as a second domain on it. Everything in this document describes the code as it is now.
+The `v1` tag in the repository marks the first core that was built end to end, which is the mock network with its seeded world and faults, the tables with task claiming, leases and fencing, the `ContextPacket` builder, three agents with fake models, verification by two agreeing reads, retries and replanning, the goal check, the reporter, the scorer, and `--kill-at` with `--resume`. Since then the system has gained a benchmark against a naive agent, a circuit breaker per host, stall detection that re-opens work that was put off, the coordinator as its own process with automatic restarts and an advisory lock, injected crashes of workers and of the coordinator, splitting of tasks too big for one attempt, a tool that fetches an earlier raw output by its pointer, the 'find all drifts' goal, documents served in pages, `LISTEN/NOTIFY` instead of polling, a plan split between several coordinators, a benchmark of all of this at scale, migrations with Alembic, a one-command docker compose, and a core that knows nothing about the audit, with the research brief as a second domain on it. Everything in this document describes the code as it is now.
 
 Some things are designed but not built, and they are named where they come up. A search of `lha/` finds no code for `depends_on` between tasks planned ahead of their inputs, for running the processes on more than one machine, or for a real model, and every model in this repository is a fake one.
 
@@ -67,6 +67,27 @@ loop:
 ```
 
 Workers never decide what happens next. They pick a task off the board, do it and hand back a result, and the coordinator decides what that result means.
+
+The diagram below follows one task from the moment a worker claims it to the moment the coordinator decides what its result means.
+
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant DB as Postgres
+    participant N as Mock network
+    participant C as Coordinator
+    W->>DB: claim a ready task (FOR UPDATE SKIP LOCKED), lease it
+    W->>DB: build a fresh ContextPacket from the facts
+    loop the attempt, with a heartbeat every 3 s
+        W->>N: tool call
+        N-->>W: raw response, or a seeded fault
+        W->>DB: log the call as an event
+    end
+    W->>DB: submit the result, fenced by attempt
+    DB-->>C: NOTIFY lha_submitted
+    C->>DB: check every claimed fact against the event it cites
+    C->>DB: one transaction with the facts, the follow-up tasks and the decision
+```
 
 ## Roles and task types
 
@@ -98,7 +119,7 @@ Every table's primary key is a UUIDv7, generated in Python in a few lines (`lha/
 
 There are four tables, and every table apart from `sessions` has a `session_id`. The `sessions` table has one row per run, with the goal and its kind, the starting hosts, the seed, the number of hosts and of planted drifts, the fault rate, the crash rate, the number of coordinators, how processes wait for work (`notify` or `poll`), the step budget, the status (`running`, `succeeded` or `failed`) and the accepted report (`lha/db/models.py`, lines 28–47). The `events` table is an append-only log of everything that happens, meaning context packets, model calls, tool calls with their raw responses, errors, injected crashes, fact changes and coordinator decisions, with the columns `id`, `session_id`, `task_id`, `attempt`, `actor`, `kind`, `payload` (jsonb) and `created_at` (`lha/db/models.py`, lines 49–64). Workers, the coordinator and the supervisor (which logs the start and any resume of a session and every restart of the coordinator, `lha/run.py`, lines 150–153, 250 and 279) all write to it, and it is never put into a prompt as a whole. The `tasks` table is the work queue and the plan (`lha/db/models.py`, lines 66–93), and the `facts` table holds the structured findings with where they came from and their status (`lha/db/models.py`, lines 95–118), written only by the coordinator and kept to one current row per `(subject, key)`.
 
-The tables are created with `CREATE TABLE IF NOT EXISTS` when a run starts, together with a trigger on `tasks` that is described under 'Waking up' below (`lha/db/__init__.py`, lines 11–48), and there are no migrations, so a database made by an older version of the code has to be dropped and made again (`just db-down && just db-up`).
+The schema is built by migrations with Alembic, which is a tool that keeps a numbered list of schema changes and records in the database which of them it has already applied, so every run brings the database up to the newest schema before it starts, and a database made by an older version of the code is upgraded in place instead of being dropped (`lha/db/migrate.py`, lines 35–45). The first revision creates the four tables and a trigger on `tasks` that is described under 'Waking up' below (`lha/db/migrations/versions/0001_initial.py`, lines 21–36 and 39–154), and a database made before there were migrations already has exactly that schema, so it is marked as being at the first revision and upgraded from there. The upgrade runs under an advisory lock, because the benchmark starts several runs at once. `just migrate revision "<what changed>"` writes a new revision from the difference between `lha/db/models.py` and the database, and a test fails when the two differ without a revision (`tests/test_migrations.py`).
 
 ## Task queue and leases
 
@@ -149,9 +170,31 @@ t=16  B submits "attempt=2"           → accepted
 
 `leased_by` alone is not enough, because the same worker could claim the task again later under a newer attempt. Cancelling needs no extra code either. When the goal is met, the coordinator sets every leftover task to `cancelled`, including ones a worker is running right now, and that worker's next heartbeat or submit has the same `AND status = 'leased'` condition, so it matches 0 rows and the worker stops and throws its result away.
 
+Every task moves through the same statuses, shown below, and only the coordinator moves a task out of `submitted`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> ready: created from an accepted result
+    ready --> leased: a worker claims it
+    leased --> submitted: the worker submits a result
+    leased --> ready: the lease expires, with a backoff
+    submitted --> succeeded: the result is accepted
+    submitted --> ready: rejected or an error, with a backoff
+    submitted --> split: too big for one attempt
+    submitted --> failed: out of attempts, or a permanent error
+    leased --> failed: out of attempts
+    ready --> cancelled: the goal is met
+    leased --> cancelled: the goal is met
+    submitted --> cancelled: the goal is met
+    succeeded --> [*]
+    split --> [*]
+    failed --> [*]
+    cancelled --> [*]
+```
+
 ### Waking up
 
-Processes don't poll for work. A trigger on `tasks` sends a Postgres notification, which is a short message on a named channel that every connection listening on that channel receives, when a task becomes ready, on the channel `lha_ready` with the session and the role, and when a result is submitted, on the channel `lha_submitted` with the session and the partition (`lha/db/__init__.py`, lines 11–29). A notification sent inside a transaction is only delivered when that transaction commits, so a process that is woken always finds the row it was told about. Each worker and each coordinator holds one extra connection that listens for its own role or partition (`lha/db/notify.py`, lines 23–54). A worker that finds no work waits for a notification, or until the next backed-off task becomes due, because nothing announces the end of a backoff, and never longer than 1 s (`lha/core/worker.py`, lines 74–82; `lha/db/crud.py`, lines 140–151), and a coordinator waits for a submitted result or 0.5 s, so it still sweeps expired leases and checks the goal (`lha/core/coordinator.py`, lines 114–143; `lha/config.py`, lines 46–47). `--poll` turns this off, so every process looks for work every 50 ms as it did before, which the scale benchmark uses for comparison.
+Processes don't poll for work. A trigger on `tasks` sends a Postgres notification, which is a short message on a named channel that every connection listening on that channel receives, when a task becomes ready, on the channel `lha_ready` with the session and the role, and when a result is submitted, on the channel `lha_submitted` with the session and the partition (`lha/db/migrations/versions/0001_initial.py`, lines 21–36). A notification sent inside a transaction is only delivered when that transaction commits, so a process that is woken always finds the row it was told about. Each worker and each coordinator holds one extra connection that listens for its own role or partition (`lha/db/notify.py`, lines 23–54). A worker that finds no work waits for a notification, or until the next backed-off task becomes due, because nothing announces the end of a backoff, and never longer than 1 s (`lha/core/worker.py`, lines 74–82; `lha/db/crud.py`, lines 140–151), and a coordinator waits for a submitted result or 0.5 s, so it still sweeps expired leases and checks the goal (`lha/core/coordinator.py`, lines 114–143; `lha/config.py`, lines 46–47). `--poll` turns this off, so every process looks for work every 50 ms as it did before, which the scale benchmark uses for comparison.
 
 ## Who writes what
 
@@ -371,7 +414,9 @@ lha/
   ids.py           UUIDv7
   faults.py        seeded dice rolls
   db/
-    __init__.py    engine, schema creation, the notify trigger
+    __init__.py    the engine
+    migrate.py     Alembic migrations, run before every run
+    migrations/    the revisions, starting with the tables and the notify trigger
     models.py      SQLAlchemy tables (internal: how rows are stored)
     crud.py        claim_task, heartbeat, submit_result, upsert_fact, ...
     notify.py      LISTEN/NOTIFY wake-ups
