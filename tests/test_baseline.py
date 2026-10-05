@@ -16,9 +16,10 @@ def ret(tool: str, content: dict) -> ToolReturnPart:
 GOAL = UserPromptPart(content="You start knowing only these hosts: host-1, host-2, host-3.")
 HOST_1 = ret("get_host", {"host": "host-1", "services": ["cache"], "documents": ["registry.json"],
                           "args": {"host": "host-1"}})  # fmt: skip
-REGISTRY = ret("fetch_document", {"host": "host-1", "name": "registry.json",
-                                  "content": json.dumps({"cache": 3}),
-                                  "args": {"host": "host-1", "name": "registry.json"}})  # fmt: skip
+REGISTRY = ret("fetch_document", {"host": "host-1", "name": "registry.json", "page": 0, "pages": 1,
+                                  "content": json.dumps({"cache": 3}, indent=2),
+                                  "args": {"host": "host-1", "name": "registry.json",
+                                           "page": 0}})  # fmt: skip
 STALE = ret("get_service", {"host": "host-1", "service": "cache", "replicas": 1,
                             "args": {"host": "host-1", "service": "cache"}})  # fmt: skip
 

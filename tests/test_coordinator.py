@@ -15,6 +15,14 @@ from lha.schemas.tasks import DiscoverInput, VerifyInput
 from tests.conftest import new_session
 
 
+async def coordinator(engine, sid, partition=0):
+    """A coordinator ready to have its rules called directly, without its loop."""
+    coord = Coordinator(engine, sid, partition=partition)
+    async with engine.connect() as conn:
+        coord.session = await crud.get_session(conn, sid)
+    return coord
+
+
 async def task_row(conn, sid, key):
     q = select(tasks).where(tasks.c.session_id == sid, tasks.c.task_key == key)
     return (await conn.execute(q)).one()
@@ -22,7 +30,7 @@ async def task_row(conn, sid, key):
 
 async def test_breaker_opens_holds_and_closes(engine):
     sid = await new_session(engine)
-    coord = Coordinator(engine, sid)
+    coord = await coordinator(engine, sid)
     async with engine.begin() as conn:
         await crud.create_task(conn, sid, "discover_host", DiscoverInput(host="host-7"))
         await crud.create_task(conn, sid, "verify_drift", VerifyInput(service="x", host="host-7"))
@@ -49,7 +57,7 @@ async def test_breaker_opens_holds_and_closes(engine):
 
 async def test_reopen_gives_put_off_work_one_more_round(engine):
     sid = await new_session(engine)
-    coord = Coordinator(engine, sid)
+    coord = await coordinator(engine, sid)
     tid = uuid7()
     async with engine.begin() as conn:
         await crud.upsert_fact(conn, sid, "host:host-9", F.UNREACHABLE, True, source_task_id=tid)
@@ -73,7 +81,7 @@ async def test_reopen_gives_put_off_work_one_more_round(engine):
 
 async def test_a_discovery_too_big_for_one_attempt_is_split(engine):
     sid = await new_session(engine)
-    coord = Coordinator(engine, sid)
+    coord = await coordinator(engine, sid)
     services = [f"s{i}" for i in range(20)]
     async with engine.begin() as conn:
         await crud.create_task(conn, sid, "discover_host", DiscoverInput(host="host-13"))
@@ -85,18 +93,30 @@ async def test_a_discovery_too_big_for_one_attempt_is_split(engine):
         )  # fmt: skip
         await coord._retry_or_fail(conn, task, "context_overflow", "the attempt needs 2100 tokens")
 
+        # Three batches of services and one batch for the document.
         assert (await task_row(conn, sid, "discover_host:host-13")).status == "split"
-        parts = [await task_row(conn, sid, f"discover_host:host-13/{n}of3") for n in (1, 2, 3)]
-        assert [p.input["services"] for p in parts] == [services[:8], services[8:16], services[16:]]
+        parts = [await task_row(conn, sid, f"discover_host:host-13/{n}of4") for n in (1, 2, 3, 4)]
+        assert [p.input["services"] for p in parts] == [services[:8], services[8:16], services[16:], []]
+        assert parts[3].input["documents"] == ["runbook.md"]
 
         # A batch may fetch what the too-big attempt already read, by pointer.
         packet = await build_packet(conn, await crud.get_session(conn, sid), parts[0])
         assert [(p.tool, p.path) for p in packet.pointers] == [("get_host", "/hosts/host-13")]
 
+        # The document turns out to be too big on its own, so it is read a page at a time.
+        doc = parts[3]
+        page = {"host": "host-13", "name": "runbook.md", "page": 0, "pages": 3, "content": "..."}
+        for tool, resp in (("get_host", response), ("fetch_document", page)):
+            payload = {"tool": tool, "path": "-", "ok": True, "response": resp}
+            await crud.log_event(conn, sid, "w", "tool_call", payload, doc.id, doc.attempt)
+        await coord._retry_or_fail(conn, doc, "context_overflow", "the attempt needs 1900 tokens")
+        pages = [await task_row(conn, sid, f"discover_host:host-13/4of4/p{n}") for n in (0, 1, 2)]
+        assert [p.input["page"] for p in pages] == [0, 1, 2]
+
 
 async def test_a_pointer_copy_counts_only_if_it_matches_its_original(engine):
     sid = await new_session(engine)
-    coord = Coordinator(engine, sid)
+    coord = await coordinator(engine, sid)
     async with engine.begin() as conn:
         await crud.create_task(conn, sid, "discover_host", DiscoverInput(host="host-2"))
         task = await task_row(conn, sid, "discover_host:host-2")
@@ -126,14 +146,14 @@ async def test_only_one_coordinator_per_session(engine, monkeypatch):
     async with engine.connect() as holder:
         await holder.execution_options(isolation_level="AUTOCOMMIT")
         await holder.execute(
-            text("SELECT pg_advisory_lock(hashtextextended(:k, 0))"), {"k": f"coordinator:{sid}"}
+            text("SELECT pg_advisory_lock(hashtextextended(:k, 0))"), {"k": f"coordinator:{sid}:0"}
         )
         assert await Coordinator(engine, sid, quiet=True).run() == "locked"
 
 
 async def test_find_all_is_done_only_when_everything_is_checked(engine):
     sid = await new_session(engine, goal_kind="all", start_hosts=["host-1"])
-    coord = Coordinator(engine, sid)
+    coord = await coordinator(engine, sid)
     tid = uuid7()
     async with engine.begin() as conn:
         session = await crud.get_session(conn, sid)

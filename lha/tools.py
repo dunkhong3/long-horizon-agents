@@ -73,9 +73,9 @@ class ToolBox:
         path = f"/hosts/{host}/services/{service}"
         return await self._call("get_service", path, ("host", "service", "replicas"))
 
-    async def fetch_document(self, host: str, name: str) -> dict[str, Any]:
-        path = f"/hosts/{host}/documents/{name}"
-        return await self._call("fetch_document", path, ("host", "name", "content"))
+    async def fetch_document(self, host: str, name: str, page: int = 0) -> dict[str, Any]:
+        path = f"/hosts/{host}/documents/{name}?page={page}"
+        return await self._call("fetch_document", path, ("host", "name", "page", "pages", "content"))
 
     async def fetch_pointer(self, event_id: str) -> dict[str, Any]:
         """Fetch an earlier attempt's raw output by its pointer, instead of calling the network.

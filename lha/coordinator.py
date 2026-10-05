@@ -1,6 +1,6 @@
 """The coordinator, which is plain code and not an LLM, and which owns the plan.
 
-    python -m lha.coordinator --session <id>
+    python -m lha.coordinator --session <id> [--partition N]
 
 It is easiest to think of it as a project manager with a to-do board
 (`tasks`) and a notebook of findings (`facts`), and every loop it does four
@@ -24,7 +24,7 @@ lock makes sure only one coordinator works on a session at a time.
 
 import argparse
 import asyncio
-import json
+import contextlib
 import re
 import sys
 import time
@@ -43,6 +43,8 @@ from lha.config import (
     BACKOFF_BASE_SECONDS,
     BREAKER_COOLDOWN_SECONDS,
     BREAKER_THRESHOLD,
+    COORDINATOR_IDLE_SECONDS,
+    GOAL_CHECK_SECONDS,
     LOCK_WAIT_SECONDS,
     MAX_ROUNDS,
     MAX_VERIFY_ROUNDS,
@@ -53,6 +55,7 @@ from lha.config import (
 )
 from lha.db import crud, make_engine
 from lha.db.models import events, facts, sessions, tasks
+from lha.db.notify import Listener
 from lha.faults import roll
 from lha.schemas import facts as F
 from lha.schemas.tasks import (
@@ -67,7 +70,7 @@ from lha.schemas.tasks import (
     VerifyInput,
     VerifyOutput,
 )
-from lha.world.model import REGISTRY_DOC
+from lha.world.model import REGISTRY_DOC, registry_entries
 
 ACTOR = "coordinator"
 ACTIVE = ("ready", "leased", "submitted")
@@ -91,11 +94,14 @@ class Coordinator:
         self,
         engine: AsyncEngine,
         session_id: UUID,
+        partition: int = 0,
         deadline: float | None = None,
         quiet: bool = False,
     ):
         self.engine = engine
         self.sid = session_id
+        self.partition = partition  # which part of the plan this coordinator decides
+        self.leader = partition == 0  # the leader also checks the goal and ends the run
         self.deadline = deadline  # wall-clock time limit, as a Unix time
         self.quiet = quiet
 
@@ -118,23 +124,40 @@ class Coordinator:
     async def _loop(self) -> None:
         async with self.engine.connect() as conn:
             self.session = await crud.get_session(conn, self.sid)
-        while True:
-            async with self.engine.begin() as conn:
-                await self._sweep_expired_leases(conn)
-
-            for task_id in await self._submitted_task_ids():
+        listener = None
+        if self.session.wakeups == "notify":
+            listener = Listener("lha_submitted", f"{self.sid}:{self.partition}")
+        last_check = 0.0
+        async with listener or contextlib.nullcontext():
+            while True:
                 async with self.engine.begin() as conn:
-                    await self._process(conn, task_id)
+                    await self._sweep_expired_leases(conn)
 
-            async with self.engine.begin() as conn:
-                if await self._check_goal_and_budget(conn):
-                    return
-            await asyncio.sleep(POLL_SECONDS)
+                submitted = await self._submitted_task_ids()
+                for task_id in submitted:
+                    async with self.engine.begin() as conn:
+                        await self._process(conn, task_id)
+
+                # The goal check reads every current fact, so it runs at most
+                # every GOAL_CHECK_SECONDS and not after every result.
+                if time.monotonic() - last_check >= GOAL_CHECK_SECONDS:
+                    last_check = time.monotonic()
+                    async with self.engine.begin() as conn:
+                        if await self._check_goal_and_budget(conn):
+                            return
+                if submitted:
+                    continue  # more may have arrived meanwhile
+                if listener is None:
+                    await asyncio.sleep(POLL_SECONDS)
+                else:
+                    # A submitted result wakes us at once, and the timeout keeps
+                    # the sweep of expired leases and the goal check going.
+                    await listener.wait(COORDINATOR_IDLE_SECONDS)
 
     async def _take_lock(self, conn: AsyncConnection) -> bool:
         """One coordinator per session, which matters when a restarted one starts
         while an old one has not fully died yet."""
-        key = f"coordinator:{self.sid}"
+        key = f"coordinator:{self.sid}:{self.partition}"
         waited = 0.0
         while True:
             q = text("SELECT pg_try_advisory_lock(hashtextextended(:key, 0))")
@@ -151,7 +174,11 @@ class Coordinator:
         async with self.engine.connect() as conn:
             q = (
                 select(tasks.c.id)
-                .where(tasks.c.session_id == self.sid, tasks.c.status == "submitted")
+                .where(
+                    tasks.c.session_id == self.sid,
+                    tasks.c.partition == self.partition,
+                    tasks.c.status == "submitted",
+                )
                 .order_by(tasks.c.created_at)
             )
             return list((await conn.execute(q)).scalars())
@@ -245,9 +272,6 @@ class Coordinator:
         wanted = inp.services if inp.services is not None else host_resp["services"]
         if sorted(s.service for s in out.services) != sorted(wanted):
             raise Rejected(f"services {[s.service for s in out.services]}, expected {wanted}")
-        wanted_docs = host_resp["documents"] if inp.part <= 1 else []
-        if sorted(d.name for d in out.documents) != sorted(wanted_docs):
-            raise Rejected(f"documents {[d.name for d in out.documents]}, expected {wanted_docs}")
         for s in out.services:
             r = _cited(cited, s.event_id, "get_service")
             if (r["host"], r["service"], r["replicas"]) != (inp.host, s.service, s.replicas):
@@ -255,55 +279,75 @@ class Coordinator:
         for d in out.documents:
             r = _cited(cited, d.event_id, "fetch_document")
             named = set(re.findall(r"\bhost-\d+\b", r["content"]))
-            if r["name"] != d.name or not set(d.mentions) <= named:
+            if (r["host"], r["name"], r["page"], r["pages"]) != (inp.host, d.name, d.page, d.pages):
+                raise Rejected(f"{d.name} page {d.page}: doesn't match the response it cites")
+            if not set(d.mentions) <= named:
                 raise Rejected(f"{d.name}: mentions {d.mentions} not all in the document")
-            if d.name == REGISTRY_DOC and d.registry != json.loads(r["content"]):
+            if d.name == REGISTRY_DOC and d.registry != registry_entries(r["content"]):
                 raise Rejected("registry doesn't match registry.json")
+        read = {(d.name, d.page) for d in out.documents}
+        expected_pages = _pages_to_read(inp, host_resp["documents"], out.documents)
+        if read != expected_pages:
+            raise Rejected(f"document pages {sorted(read)}, expected {sorted(expected_pages)}")
 
-        # 2. Write facts.
+        # 2. Write facts, all in one batch.
         sid, tid = self.sid, task.id
+        host_event = UUID(out.host_event_id)
         listing = {"services": host_resp["services"], "documents": host_resp["documents"]}
-        for key, value in ((F.EXISTS, True), (F.LISTING, listing)):
-            await crud.upsert_fact(
-                conn, sid, F.host_subject(inp.host), key, value,
-                source_task_id=tid, source_event_id=UUID(out.host_event_id),
-            )  # fmt: skip
+        writes = [
+            (F.host_subject(inp.host), F.EXISTS, True, host_event),
+            (F.host_subject(inp.host), F.LISTING, listing, host_event),
+        ]
         for s in out.services:
-            await crud.upsert_fact(
-                conn, sid, F.service_subject(s.service, inp.host), F.REPLICAS, s.replicas,
-                source_task_id=tid, source_event_id=UUID(s.event_id),
-            )  # fmt: skip
+            writes.append((F.service_subject(s.service, inp.host), F.REPLICAS, s.replicas, UUID(s.event_id)))
         registry_found = False
         for d in out.documents:
-            await crud.upsert_fact(
-                conn, sid, F.doc_subject(d.name, inp.host), F.MENTIONS, d.mentions,
-                source_task_id=tid, source_event_id=UUID(d.event_id),
-            )  # fmt: skip
+            subject = F.doc_subject(d.name, inp.host, d.page)
+            writes.append((subject, F.MENTIONS, d.mentions, UUID(d.event_id)))
+            if d.page == 0:
+                writes.append((subject, F.PAGES, d.pages, UUID(d.event_id)))
             for service, expected in (d.registry or {}).items():
                 registry_found = True
-                await crud.upsert_fact(
-                    conn, sid, F.registry_subject(service), F.EXPECTED, expected,
-                    source_task_id=tid, source_event_id=UUID(d.event_id),
-                )  # fmt: skip
+                writes.append((F.registry_subject(service), F.EXPECTED, expected, UUID(d.event_id)))
+        await crud.upsert_facts(conn, sid, writes, source_task_id=tid)
 
         # 3. Follow-ups. Creating a task that already exists does nothing.
+        await self._registry_edge(conn, exclusive=registry_found)
         for d in out.documents:
             for host in d.mentions:
                 await self._create(conn, "discover_host", DiscoverInput(host=host), tid)
-        # A compare needs both the read and the registry entry.
-        for s in out.services:
-            if await crud.current_fact(conn, sid, F.registry_subject(s.service), F.EXPECTED):
-                await self._create(
-                    conn, "compare_service", CompareInput(service=s.service, host=inp.host), tid
-                )
-        if registry_found:
-            # Services read before the registry was found get compared now.
-            q = select(facts.c.subject).where(
-                facts.c.session_id == sid, facts.c.key == F.REPLICAS, facts.c.status != F.SUPERSEDED
-            )
-            for subject in (await conn.execute(q)).scalars():
-                service, host = F.split_service_subject(subject)
+        # A compare needs both the read and the registry entry, and when part of
+        # the registry arrives, the services read before it get compared now.
+        in_registry = await self._current_subjects(conn, F.EXPECTED)
+        reads = (
+            await self._current_subjects(conn, F.REPLICAS)
+            if registry_found
+            else {F.service_subject(s.service, inp.host) for s in out.services}
+        )
+        for subject in sorted(reads):
+            service, host = F.split_service_subject(subject)
+            if F.registry_subject(service) in in_registry:
                 await self._create(conn, "compare_service", CompareInput(service=service, host=host), tid)
+
+    async def _current_subjects(self, conn: AsyncConnection, key: str) -> set[str]:
+        q = select(facts.c.subject).where(
+            facts.c.session_id == self.sid, facts.c.key == key, facts.c.status != F.SUPERSEDED
+        )
+        return set((await conn.execute(q)).scalars())
+
+    async def _registry_edge(self, conn: AsyncConnection, exclusive: bool) -> None:
+        """The one place where two coordinators' results depend on each other.
+
+        A read creates its compare only if the registry fact exists, and the
+        registry creates compares for every read that exists. With several
+        coordinators, a read and the registry committed at the same moment
+        could each miss the other, so every discovery takes this lock in
+        shared mode and the one that found the registry takes it exclusively,
+        until its transaction ends. Whichever goes second then sees what the
+        first committed.
+        """
+        lock = "pg_advisory_xact_lock" if exclusive else "pg_advisory_xact_lock_shared"
+        await conn.execute(text(f"SELECT {lock}(hashtextextended(:key, 0))"), {"key": f"registry:{self.sid}"})
 
     async def _accept_compare(self, conn: AsyncConnection, task: Row, out: CompareOutput) -> None:
         inp = CompareInput(**task.input)
@@ -480,33 +524,58 @@ class Coordinator:
         await self._replan(conn, task, kind, probe_at)
 
     async def _split(self, conn: AsyncConnection, task: Row, reason: str) -> bool:
-        """Split a discovery that didn't fit in one attempt into batches of services.
+        """Split a discovery that didn't fit in one attempt into batches.
 
-        The list of services comes from the failed attempt's own get_host
-        call, which is a raw response in `events`, and not from anything the
-        worker claimed. A batch that still doesn't fit is not split again,
-        so it fails like any other permanent error.
+        A whole host is split into batches of services and one batch per
+        document, and a document still too big for one attempt is split into
+        its pages. What the host lists and how many pages a document has come
+        from the failed attempt's own responses, which are raw tool output in
+        `events`, and not from anything the worker claimed. A single page or a
+        batch of services that still doesn't fit is not split again, so it
+        fails like any other permanent error.
         """
         if task.type != "discover_host":
             return False
         inp = DiscoverInput(**task.input)
-        if inp.parts:
+        responses = list((await self._cited_responses(conn, task)).values())
+        host_resp = next((p["response"] for p in responses if p["tool"] == "get_host"), None)
+        if host_resp is None:
             return False
-        host_resp = next(
-            (
-                p["response"]
-                for p in (await self._cited_responses(conn, task)).values()
-                if p["tool"] == "get_host"
-            ),
-            None,
-        )
-        if host_resp is None or len(host_resp["services"]) <= 1:
+        batches: list[DiscoverInput] = []
+        if not inp.parts:
+            batches = _batches(
+                inp.host, inp.round, host_resp["services"], [(d, None) for d in host_resp["documents"]]
+            )
+        if (
+            inp.documents
+            and inp.page is None
+            and not inp.services
+            or len(batches) == 1
+            and batches[0].documents
+        ):
+            # One document is too big on its own, so read it a page at a time.
+            name = (inp.documents or batches[0].documents)[0]
+            first = next(
+                (
+                    p["response"]
+                    for p in responses
+                    if p["tool"] == "fetch_document" and p["response"]["name"] == name
+                ),
+                None,
+            )
+            if first is None:
+                return False
+            part, parts = (inp.part, inp.parts) if inp.parts else (1, 1)
+            batches = [
+                inp.model_copy(
+                    update={"services": [], "documents": [name], "page": page, "part": part, "parts": parts}
+                )
+                for page in range(first["pages"])
+            ]
+        if len(batches) <= 1:
             return False
-        services = host_resp["services"]
-        batches = [services[i : i + SPLIT_BATCH] for i in range(0, len(services), SPLIT_BATCH)]
-        for n, batch in enumerate(batches, 1):
-            part = DiscoverInput(host=inp.host, round=inp.round, services=batch, part=n, parts=len(batches))
-            await self._create(conn, "discover_host", part, task.id)
+        for batch in batches:
+            await self._create(conn, "discover_host", batch, task.id)
         await conn.execute(update(tasks).where(tasks.c.id == task.id).values(status="split"))
         await self._decide(conn, task, "split", f"{reason}; split into {len(batches)} batches")
         return True
@@ -559,6 +628,7 @@ class Coordinator:
             select(tasks)
             .where(
                 tasks.c.session_id == self.sid,
+                tasks.c.partition == self.partition,
                 tasks.c.status == "leased",
                 tasks.c.lease_expires_at < func.now(),
             )
@@ -592,7 +662,7 @@ class Coordinator:
                 if not probe:
                     until += timedelta(seconds=BREAKER_COOLDOWN_SECONDS)
                 delay = max(delay, (until - _now()).total_seconds())
-        return await crud.create_task(conn, self.sid, task_type, inp, parent, delay)
+        return await crud.create_task(conn, self.sid, task_type, inp, parent, delay, self.session.partitions)
 
     async def _breaker_failure(self, conn: AsyncConnection, task: Row, kind: str) -> datetime | None:
         """Count a failed network attempt against its host, and open the breaker
@@ -650,10 +720,13 @@ class Coordinator:
     # --- goal, budget, stalls, end --------------------------------------------
 
     async def _check_goal_and_budget(self, conn: AsyncConnection) -> bool:
-        """Returns True when the session is over."""
+        """Returns True when the session is over. Only the leader checks the
+        goal, the budget and stalls, and the others just watch for the end."""
         session = await crud.get_session(conn, self.sid)
         if session.status != "running":
             return True
+        if not self.leader:
+            return False
         report = (
             await conn.execute(
                 select(tasks.c.id).where(tasks.c.session_id == self.sid, tasks.c.type == "write_report")
@@ -690,7 +763,7 @@ class Coordinator:
             .returning(tasks.c.id)
         )
         n_cancelled = len(cancelled.all())
-        await crud.create_task(conn, self.sid, "write_report", ReportInput(partial=partial))
+        await self._create(conn, "write_report", ReportInput(partial=partial), None)
         await crud.log_event(
             conn, self.sid, ACTOR, "goal_met" if not partial else "run_ending",
             {"reason": reason, "cancelled_tasks": n_cancelled, "steps": steps},
@@ -735,15 +808,19 @@ class Coordinator:
             by_key.setdefault(row.key, {})[row.subject] = row
         return by_key
 
-    def _unread(self, session: Row, facts_now: dict[str, dict[str, Row]]) -> dict[str, tuple[list, list]]:
-        """What is known to exist but hasn't been read, as host -> (services, documents).
+    def _unread(self, session: Row, facts_now: dict[str, dict[str, Row]]) -> dict[str, tuple]:
+        """What is known to exist but hasn't been read, as host -> (services, pages).
 
-        A host that some document mentions but nobody has read yet appears with
-        None for both, because its listing is not known yet.
+        `pages` holds (document, None) for a document not read at all and
+        (document, page) for a later page that is missing. A host that some
+        document mentions but nobody has read yet appears with (None, None),
+        because its listing is not known yet.
         """
         exists, listings = facts_now.get(F.EXISTS, {}), facts_now.get(F.LISTING, {})
+        mentions, n_pages = facts_now.get(F.MENTIONS, {}), facts_now.get(F.PAGES, {})
+        reads = facts_now.get(F.REPLICAS, {})
         mentioned = set(session.start_hosts)
-        for row in facts_now.get(F.MENTIONS, {}).values():
+        for row in mentions.values():
             mentioned.update(row.value)
         unread: dict[str, tuple] = {}
         for host in sorted(mentioned):
@@ -751,18 +828,17 @@ class Coordinator:
                 unread[host] = (None, None)
         for subject, row in listings.items():
             host = subject.removeprefix("host:")
-            services = [
-                s
-                for s in row.value["services"]
-                if F.service_subject(s, host) not in facts_now.get(F.REPLICAS, {})
-            ]
-            documents = [
-                d
-                for d in row.value["documents"]
-                if F.doc_subject(d, host) not in facts_now.get(F.MENTIONS, {})
-            ]
-            if services or documents:
-                unread[host] = (services, documents)
+            services = [s for s in row.value["services"] if F.service_subject(s, host) not in reads]
+            pages: list[tuple[str, int | None]] = []
+            for doc in row.value["documents"]:
+                first = F.doc_subject(doc, host)
+                if first not in mentions:
+                    pages.append((doc, None))
+                    continue
+                total = n_pages[first].value if first in n_pages else 1
+                pages += [(doc, p) for p in range(1, total) if F.doc_subject(doc, host, p) not in mentions]
+            if services or pages:
+                unread[host] = (services, pages)
         return unread
 
     async def _has_active_tasks(self, conn: AsyncConnection) -> bool:
@@ -837,14 +913,10 @@ class Coordinator:
         # Hosts read only in part, because a batch of a split discovery failed
         # for good, get the rest read in batches of their own.
         session = await crud.get_session(conn, self.sid)
-        for host, (services, _) in self._unread(session, await self._current_facts(conn)).items():
+        for host, (services, pages) in self._unread(session, await self._current_facts(conn)).items():
             if services is None or ("discover_host", host, None) in working:
                 continue
-            batches = [services[i : i + SPLIT_BATCH] for i in range(0, len(services), SPLIT_BATCH)] or [[]]
-            for n, batch in enumerate(batches, 1):
-                inp = DiscoverInput(
-                    host=host, round=MAX_ROUNDS + 1, services=batch, part=n, parts=len(batches)
-                )
+            for inp in _batches(host, MAX_ROUNDS + 1, services, pages):
                 if await self._create(conn, "discover_host", inp, None):
                     created += 1
         if created:
@@ -861,6 +933,10 @@ class Coordinator:
             "reason": reason,
             "task_key": task.task_key if task else None,
         }
+        if task is not None and task.status == "submitted" and task.submitted_at is not None:
+            # How long the result waited for the coordinator, which is what
+            # grows first when one coordinator can't keep up.
+            payload["latency_ms"] = round((_now() - task.submitted_at).total_seconds() * 1000)
         task_id, attempt = (task.id, task.attempt) if task else (None, None)
         await crud.log_event(conn, self.sid, ACTOR, "decision", payload, task_id, attempt)
 
@@ -921,6 +997,30 @@ async def progress_line(engine: AsyncEngine, sid: UUID) -> str:
     )
 
 
+def _batches(
+    host: str, rnd: int, services: list[str], pages: list[tuple[str, int | None]]
+) -> list[DiscoverInput]:
+    """Discovery batches over these services and document pages, numbered as
+    parts of one whole, where (document, None) stands for every page of it."""
+    plan = [
+        {"services": services[i : i + SPLIT_BATCH], "documents": []}
+        for i in range(0, len(services), SPLIT_BATCH)
+    ]
+    plan += [{"services": [], "documents": [doc], "page": page} for doc, page in pages]
+    return [DiscoverInput(host=host, round=rnd, part=n, parts=len(plan), **b) for n, b in enumerate(plan, 1)]
+
+
+def _pages_to_read(inp: DiscoverInput, listed: list[str], read: list) -> set[tuple[str, int]]:
+    """The (document, page) pairs a discovery must report: every page of every
+    document it was given, or the one page a page batch was given. How many
+    pages a document has comes from the cited page responses."""
+    if inp.page is not None:
+        return {(name, inp.page) for name in inp.documents or []}
+    pages = {d.name: d.pages for d in read}
+    documents = inp.documents if inp.documents is not None else listed
+    return {(name, page) for name in documents for page in range(pages.get(name, 1))}
+
+
 def _cited(cited: dict[str, dict], event_id: str, tool: str) -> dict:
     """The response of a successful tool call from this attempt, or Rejected."""
     payload = cited.get(event_id)
@@ -931,7 +1031,9 @@ def _cited(cited: dict[str, dict], event_id: str, tool: str) -> dict:
 
 async def main(args: argparse.Namespace) -> int:
     engine = make_engine()
-    coordinator = Coordinator(engine, UUID(args.session), deadline=args.deadline, quiet=args.quiet)
+    coordinator = Coordinator(
+        engine, UUID(args.session), partition=args.partition, deadline=args.deadline, quiet=args.quiet
+    )
     try:
         outcome = await coordinator.run()
     except InjectedCrash as e:
@@ -947,6 +1049,7 @@ if __name__ == "__main__":
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--session", required=True)
+    parser.add_argument("--partition", type=int, default=0, help="which part of the plan (0 is the leader)")
     parser.add_argument("--deadline", type=float, help="time limit, as a Unix time")
     parser.add_argument("--quiet", action="store_true")
     try:

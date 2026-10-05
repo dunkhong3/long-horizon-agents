@@ -38,6 +38,20 @@ def test_injected_crashes_pass():
     assert "crashes=0 " not in result.stdout
 
 
+def test_partitioned_coordinators_with_more_workers_pass():
+    result = run(
+        "--seed", "106", "--goal", "all", "--coordinators", "3", "--discovery", "6", "--analysis", "6"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "found all 3 planted drifts" in result.stdout
+
+
+def test_polling_instead_of_notify_passes():
+    result = run("--seed", "107", "--poll")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "verdict=PASS" in result.stdout
+
+
 def test_crash_then_resume_passes():
     crashed = run("--seed", "103", "--kill-at", "100")
     assert crashed.returncode == 137, crashed.stdout + crashed.stderr

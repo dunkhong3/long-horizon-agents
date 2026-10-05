@@ -10,7 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import func, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -19,7 +19,7 @@ from lha.config import LEASE_SECONDS, MAX_ATTEMPTS
 from lha.db.models import events, facts, sessions, tasks
 from lha.ids import uuid7
 from lha.schemas.facts import OBSERVED, SUPERSEDED, VERIFIED
-from lha.schemas.tasks import ROLE_OF, task_key, task_scope
+from lha.schemas.tasks import ROLE_OF, task_key, task_partition, task_scope
 
 # A 'step' is one model call or one tool call.
 STEP_KINDS = ("model_call", "tool_call")
@@ -79,11 +79,12 @@ async def create_task(
     inp: BaseModel,
     parent_task_id: UUID | None = None,
     delay_seconds: float = 0.0,
+    partitions: int = 1,
 ) -> UUID | None:
     """Create a task unless one with the same task_key already exists.
 
     Returns the new task's id, or None if it already existed (in which case
-    nothing happens).
+    nothing happens). `partitions` is the session's number of coordinators.
     """
     stmt = (
         pg_insert(tasks)
@@ -94,6 +95,7 @@ async def create_task(
             parent_task_id=parent_task_id,
             type=task_type,
             role=ROLE_OF[task_type],
+            partition=task_partition(inp, partitions),
             input=inp.model_dump(),
             scope=task_scope(inp),
             status="ready",  # tasks are only created once their inputs exist
@@ -130,6 +132,20 @@ async def claim_task(conn: AsyncConnection, session_id: UUID, role: str, worker:
     return (await conn.execute(CLAIM_SQL, params)).one_or_none()
 
 
+async def seconds_until_due(conn: AsyncConnection, session_id: UUID, role: str) -> float | None:
+    """How long until the next ready task for this role may be claimed, or None
+    if there is none. A worker with nothing to do sleeps at most this long,
+    because no notification is sent when a backoff simply runs out."""
+    q = text(
+        """
+        SELECT extract(epoch FROM min(not_before) - now())
+          FROM tasks WHERE session_id = :sid AND status = 'ready' AND role = :role
+        """
+    )
+    due = (await conn.execute(q, {"sid": session_id, "role": role})).scalar_one()
+    return None if due is None else max(0.0, float(due))
+
+
 async def heartbeat(conn: AsyncConnection, task_id: UUID, worker: str, attempt: int) -> bool:
     """Extend the lease, where False means the task was taken from us.
 
@@ -162,7 +178,7 @@ async def submit_result(
             tasks.c.attempt == attempt,
             tasks.c.status == "leased",
         )
-        .values(status="submitted", result=result)
+        .values(status="submitted", result=result, submitted_at=func.now())
         .returning(tasks.c.id)
     )
     return (await conn.execute(stmt)).first() is not None
@@ -254,6 +270,59 @@ async def upsert_fact(
         task_id=source_task_id,
     )  # fmt: skip
     return fact_id
+
+
+async def upsert_facts(
+    conn: AsyncConnection,
+    session_id: UUID,
+    writes: list[tuple[str, str, Any, UUID | None]],
+    *,
+    source_task_id: UUID,
+) -> None:
+    """Write several observed facts, each as (subject, key, value, source event).
+
+    The rules are the same as upsert_fact's, but the whole batch takes four
+    statements however many facts it has, which matters for a result such as
+    a page of the registry with forty entries.
+    """
+    latest = {(subject, key): (value, event) for subject, key, value, event in writes}
+    if not latest:
+        return
+    q = select(facts).where(
+        facts.c.session_id == session_id,
+        facts.c.status != SUPERSEDED,
+        tuple_(facts.c.subject, facts.c.key).in_(list(latest)),
+    )
+    current = {(r.subject, r.key): r for r in (await conn.execute(q)).all()}
+    replaced, rows, changes = [], [], []
+    for (subject, key), (value, event) in latest.items():
+        cur = current.get((subject, key))
+        if cur is not None and cur.value == value and cur.status == OBSERVED:
+            continue
+        if cur is not None and cur.status == VERIFIED:
+            raise FactConflict(f"{subject} {key}: verified value {cur.value!r}, got {value!r}")
+        if cur is not None:
+            replaced.append(cur.id)
+        fact_id = uuid7()
+        rows.append(
+            dict(
+                id=fact_id, session_id=session_id, subject=subject, key=key, value=value,
+                status=OBSERVED, source_task_id=source_task_id, source_event_id=event,
+            )
+        )  # fmt: skip
+        change = {"fact_id": str(fact_id), "subject": subject, "key": key, "value": value,
+                  "status": OBSERVED, "replaced": str(cur.id) if cur else None}  # fmt: skip
+        changes.append(
+            dict(
+                id=uuid7(), session_id=session_id, task_id=source_task_id, actor="coordinator",
+                kind="fact_changed", payload=change,
+            )
+        )  # fmt: skip
+    if replaced:
+        await conn.execute(update(facts).where(facts.c.id.in_(replaced)).values(status=SUPERSEDED))
+    if rows:
+        await conn.execute(facts.insert(), rows)
+        await conn.execute(events.insert(), changes)
 
 
 async def update_fact(

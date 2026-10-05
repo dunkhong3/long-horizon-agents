@@ -42,7 +42,10 @@ MAX_POINTERS = 40
 # Runs.
 DEFAULT_HOSTS = 20
 DEFAULT_STEP_BUDGET = 3000
-POLL_SECONDS = 0.05
+POLL_SECONDS = 0.05  # how often to look for work when polling (--poll)
+IDLE_MAX_SECONDS = 1.0  # the longest a worker waits for a notification before looking anyway
+COORDINATOR_IDLE_SECONDS = 0.5  # the same for a coordinator, which also sweeps leases
+GOAL_CHECK_SECONDS = 0.5  # how often the leader checks the goal, the budget and stalls
 ALL_DRIFTS = 3  # drifts planted for the 'find all drifts' goal
 
 # Crashes, where the supervisor gives up on a coordinator that crashes this

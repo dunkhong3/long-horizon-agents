@@ -1,17 +1,16 @@
-"""The discovery agent, which reads one host, its services and its documents.
+"""The discovery agent, which reads one host, its services and its documents (page by page).
 
 This is the 'breadth' role. It reports what exists and which other hosts
 the documents mention, and it decides nothing about drift.
 """
 
-import json
 import re
 from typing import Any
 
 from lha.agents.base import AgentContext, Call, Final, run_agent
 from lha.schemas.context import ContextPacket
 from lha.schemas.tasks import DiscoverOutput
-from lha.world.model import REGISTRY_DOC
+from lha.world.model import REGISTRY_DOC, registry_entries
 
 HOST_NAME = re.compile(r"\bhost-\d+\b")
 
@@ -33,26 +32,34 @@ def policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Call | Fina
 
     info = results[0][1]
     reads = {r["service"]: r for name, r in results if name == "get_service"}
-    docs = {r["name"]: r for name, r in results if name == "fetch_document"}
-    # A batch of a split discovery reads only its own services, and only
-    # the first batch reads the documents.
+    pages = {(r["name"], r["page"]): r for name, r in results if name == "fetch_document"}
+    # A batch of a split discovery reads only what it lists.
     services = inp["services"] if inp.get("services") is not None else info["services"]
-    documents = info["documents"] if inp.get("part", 0) <= 1 else []
+    documents = inp["documents"] if inp.get("documents") is not None else info["documents"]
 
-    # One call at a time, first every service and then every document.
+    # One call at a time, first every service, then every page of every document.
     for service in services:
         if service not in reads:
             path = f"/hosts/{host}/services/{service}"
             return call("get_service", path, {"host": host, "service": service})
     for doc in documents:
-        if doc not in docs:
-            return call("fetch_document", f"/hosts/{host}/documents/{doc}", {"host": host, "name": doc})
+        if inp.get("page") is not None:
+            wanted = [inp["page"]]
+        elif (doc, 0) in pages:
+            wanted = range(pages[(doc, 0)]["pages"])
+        else:
+            wanted = [0]  # the first page says how many there are
+        for page in wanted:
+            if (doc, page) not in pages:
+                path = f"/hosts/{host}/documents/{doc}?page={page}"
+                return call("fetch_document", path, {"host": host, "name": doc, "page": page})
 
     found = []
-    for name, d in docs.items():
+    for (name, page), d in pages.items():
         mentions = sorted(set(HOST_NAME.findall(d["content"])) - {host})
-        registry = json.loads(d["content"]) if name == REGISTRY_DOC else None
-        found.append({"name": name, "mentions": mentions, "registry": registry, "event_id": d["event_id"]})
+        registry = registry_entries(d["content"]) if name == REGISTRY_DOC else None
+        found.append({"name": name, "page": page, "pages": d["pages"], "mentions": mentions,
+                      "registry": registry, "event_id": d["event_id"]})  # fmt: skip
     return Final(
         {
             "host": host,
@@ -87,9 +94,9 @@ async def run(ctx: AgentContext) -> DiscoverOutput:
         """Read a service's current replica count."""
         return await ctx.tools.get_service(host, service)
 
-    async def fetch_document(host: str, name: str) -> dict:
-        """Read a document stored on a host."""
-        return await ctx.tools.fetch_document(host, name)
+    async def fetch_document(host: str, name: str, page: int = 0) -> dict:
+        """Read one page of a document stored on a host."""
+        return await ctx.tools.fetch_document(host, name, page)
 
     async def fetch_pointer(event_id: str) -> dict:
         """Fetch an earlier attempt's raw tool output by its pointer."""

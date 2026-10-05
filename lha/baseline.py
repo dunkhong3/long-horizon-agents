@@ -43,7 +43,7 @@ from lha.context import estimate_tokens
 from lha.faults import roll
 from lha.scoring import answer_checks, prompt_stats, repeated_reads
 from lha.tools import ToolBox, ToolFailure
-from lha.world.model import REGISTRY_DOC, START_HOSTS, generate_world
+from lha.world.model import REGISTRY_DOC, START_HOSTS, generate_world, registry_entries
 
 HOST_NAME = re.compile(r"\bhost-\d+\b")
 GIVE_UP_AFTER = 3  # failures in a row of the same call, as seen in the window
@@ -117,15 +117,22 @@ class View:
     missing: set[str] = field(default_factory=set)  # hosts that answered 404
     reads: dict[tuple[str, str], int] = field(default_factory=dict)  # (host, service) -> replicas
     rechecks: dict[tuple[str, str], int] = field(default_factory=dict)
-    documents: dict[tuple[str, str], str] = field(default_factory=dict)  # (host, name) -> text
+    documents: dict[tuple[str, str, int], str] = field(default_factory=dict)  # (host, name, page) -> text
+    pages: dict[tuple[str, str], int] = field(default_factory=dict)  # (host, name) -> page count
     mentioned: list[str] = field(default_factory=list)  # hosts named in documents, in order
     failures: dict[str, int] = field(default_factory=dict)  # call -> failures in a row
     last_failed: tuple[str, dict] | None = None  # the newest result, if it was a failure
 
     @property
     def registry(self) -> dict[str, int] | None:
-        text = self.documents.get((START_HOSTS[0], REGISTRY_DOC))
-        return json.loads(text) if text else None
+        """The registry, once every page of it is visible at the same time."""
+        key = (START_HOSTS[0], REGISTRY_DOC)
+        if key not in self.pages or any((*key, p) not in self.documents for p in range(self.pages[key])):
+            return None
+        entries: dict[str, int] = {}
+        for page in range(self.pages[key]):
+            entries.update(registry_entries(self.documents[(*key, page)]))
+        return entries
 
 
 def read_view(parts: list[Any]) -> View:
@@ -155,7 +162,8 @@ def read_view(parts: list[Any]) -> View:
             key = (r["host"], r["service"])
             (view.rechecks if r["args"].get("recheck") else view.reads)[key] = r["replicas"]
         elif part.tool_name == "fetch_document":
-            view.documents[(r["host"], r["name"])] = r["content"]
+            view.documents[(r["host"], r["name"], r["page"])] = r["content"]
+            view.pages[(r["host"], r["name"])] = r["pages"]
             for host in HOST_NAME.findall(r["content"]):
                 if host != r["host"] and host not in view.mentioned:
                     view.mentioned.append(host)
@@ -213,9 +221,10 @@ def policy(view: View, reread: bool) -> Next | dict[str, Any]:
             if (host, service) not in view.reads and not gave_up("get_service", args):
                 return Next("get_service", args)
         for name in info["documents"]:
-            args = {"host": host, "name": name}
-            if (host, name) not in view.documents and not gave_up("fetch_document", args):
-                return Next("fetch_document", args)
+            for page in range(view.pages.get((host, name), 1)):
+                args = {"host": host, "name": name, "page": page}
+                if (host, name, page) not in view.documents and not gave_up("fetch_document", args):
+                    return Next("fetch_document", args)
     for host in [*view.start_hosts, *view.mentioned]:
         if host not in view.hosts and host not in view.missing and not gave_up("get_host", {"host": host}):
             return Next("get_host", {"host": host})
@@ -298,10 +307,12 @@ class Tools:
         key = f"verify_drift:{service}@{host}#1" if recheck else f"discover_host:{host}"
         return await self._try(args, self.box(key, recheck).get_service(host, service))
 
-    async def fetch_document(self, host: str, name: str) -> dict:
-        """Read a document stored on a host."""
-        args = {"host": host, "name": name}
-        return await self._try(args, self.box(f"discover_host:{host}", False).fetch_document(host, name))
+    async def fetch_document(self, host: str, name: str, page: int = 0) -> dict:
+        """Read one page of a document stored on a host."""
+        args = {"host": host, "name": name, "page": page}
+        return await self._try(
+            args, self.box(f"discover_host:{host}", False).fetch_document(host, name, page)
+        )
 
     async def _try(self, args: dict, call) -> dict:
         try:

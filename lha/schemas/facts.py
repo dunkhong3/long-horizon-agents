@@ -10,7 +10,8 @@ EXISTS = "exists"  # host:<h> -> true / false
 LISTING = "listing"  # host:<h> -> {"services": [...], "documents": [...]}, as the host listed them
 UNREACHABLE = "unreachable"  # host:<h> -> true after repeated failures
 REPLICAS = "config.replicas"  # service:<s>@<h> -> int (a read)
-MENTIONS = "mentions"  # doc:<name>@<h> -> [hosts]
+MENTIONS = "mentions"  # doc:<name>@<h> (or doc:<name>#<page>@<h>) -> [hosts]
+PAGES = "pages"  # doc:<name>@<h> -> how many pages the document has
 EXPECTED = "replicas"  # registry:<s> -> int
 DRIFT = "drift.replicas"  # service:<s>@<h> -> {"expected", "actual"} (a claim)
 VERDICT = "verdict"  # service:<s>@<h> -> "match" after a clean compare
@@ -32,8 +33,9 @@ def service_subject(service: str, host: str) -> str:
     return f"service:{service}@{host}"
 
 
-def doc_subject(name: str, host: str) -> str:
-    return f"doc:{name}@{host}"
+def doc_subject(name: str, host: str, page: int = 0) -> str:
+    """Page 0 is the document itself, and later pages get '#<page>'."""
+    return f"doc:{name}@{host}" if page == 0 else f"doc:{name}#{page}@{host}"
 
 
 def registry_subject(service: str) -> str:

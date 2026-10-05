@@ -4,10 +4,11 @@
     python -m lha.run --seed 42 --chaos 0.3     # more faults
     python -m lha.run --seed 42 --goal all      # find every drift, not just one
     python -m lha.run --seed 42 --crashes 0.05  # crash workers and the coordinator
+    python -m lha.run --seed 42 --hosts 200 --coordinators 4 --discovery 16 --analysis 16
     python -m lha.run --seed 42 --kill-at 120   # crash everything after step 120
     python -m lha.run --resume [SESSION]        # continue an unfinished run (default: latest)
 
-It starts the mock network, the coordinator and the worker processes as
+It starts the mock network, the coordinators and the worker processes as
 separate OS processes, restarts any of them that dies, and prints progress.
 All state lives in Postgres, which is why a restart, and --resume, work.
 """
@@ -35,9 +36,10 @@ from lha.schemas.tasks import DiscoverInput
 from lha.scoring import Score, score_session
 from lha.world.model import START_HOSTS
 
-# Worker processes per role.
+# Worker processes per role, unless --discovery or --analysis say otherwise.
 WORKERS = {"discovery": 2, "analysis": 2, "reporter": 1}
 TICK_SECONDS = 0.05
+STOP_GRACE_SECONDS = 3.0  # time for workers to exit by themselves after a finished run
 PROGRESS_EVERY_SECONDS = 2.0
 
 GOALS = {
@@ -88,30 +90,33 @@ async def start_world(seed: int, n_hosts: int, fault_rate: float, n_drifts: int 
 
 
 class Supervisor:
-    def __init__(self, engine, session, deadline: float, quiet: bool):
+    def __init__(self, engine, session, workers: dict[str, int], deadline: float, quiet: bool):
         self.engine = engine
         self.session = session
         self.sid = session.id
+        self.worker_counts = workers
         self.deadline = deadline
         self.quiet = quiet
         self.world: WorldProcess | None = None
-        self.coordinator: asyncio.subprocess.Process | None = None
+        # One coordinator process per partition, where partition 0 leads.
+        self.coordinators: dict[int, asyncio.subprocess.Process] = {}
         self.restarts = 0
-        self.crashes_in_a_row = 0
-        self.decisions_at_last_crash = -1
+        self.crashes_in_a_row: dict[int, int] = {}
+        self.decisions_at_last_crash: dict[int, int] = {}
         self.workers: dict[str, tuple[str, asyncio.subprocess.Process]] = {}  # name -> (role, proc)
 
     async def start(self) -> None:
         s = self.session
         self.world = await start_world(s.seed, s.n_hosts, s.fault_rate, s.n_drifts)
-        await self._start_coordinator()
-        for role, count in WORKERS.items():
+        for partition in range(s.partitions):
+            await self._start_coordinator(partition)
+        for role, count in self.worker_counts.items():
             for i in range(1, count + 1):
                 await self._start_worker(role, f"{role}-{i}")
 
-    async def _start_coordinator(self) -> None:
-        args = ["--session", str(self.sid), "--deadline", str(self.deadline)]
-        self.coordinator = await _spawn(
+    async def _start_coordinator(self, partition: int) -> None:
+        args = ["--session", str(self.sid), "--partition", str(partition), "--deadline", str(self.deadline)]
+        self.coordinators[partition] = await _spawn(
             "lha.coordinator", *args, *(["--quiet"] if self.quiet else []), show=True
         )
 
@@ -127,14 +132,15 @@ class Supervisor:
         last_progress = time.monotonic()
         while True:
             await self._restart_dead_workers()
-            code = self.coordinator.returncode
-            if code == 0:
-                return "finished"
-            if code is not None:
-                if await self._crash_loop(code):
+            if self.coordinators[0].returncode == 0:
+                return "finished"  # the leader ends once the session is over
+            for partition, proc in list(self.coordinators.items()):
+                if proc.returncode in (None, 0):
+                    continue
+                if await self._crash_loop(partition, proc.returncode):
                     return "crash_loop"
                 self.restarts += 1
-                await self._start_coordinator()
+                await self._start_coordinator(partition)
             if kill_at is not None or not self.quiet:
                 async with self.engine.connect() as conn:
                     steps = await crud.step_count(conn, self.sid)
@@ -145,7 +151,7 @@ class Supervisor:
                     print(f"[supervisor] {await progress_line(self.engine, self.sid)}", flush=True)
             await asyncio.sleep(TICK_SECONDS)
 
-    async def _crash_loop(self, code: int) -> bool:
+    async def _crash_loop(self, partition: int, code: int) -> bool:
         """A coordinator that keeps crashing without committing anything in
         between is a bug (such as one result that always crashes it), not bad
         luck, so after CRASH_LOOP_LIMIT of those in a row we stop."""
@@ -154,12 +160,13 @@ class Supervisor:
             decisions = (await conn.execute(q)).scalar_one()
             await crud.log_event(
                 conn, self.sid, "supervisor", "coordinator_restarted",
-                {"exit_code": code, "restarts": self.restarts + 1},
+                {"partition": partition, "exit_code": code, "restarts": self.restarts + 1},
             )  # fmt: skip
-        self.crashes_in_a_row = self.crashes_in_a_row + 1 if decisions == self.decisions_at_last_crash else 1
-        self.decisions_at_last_crash = decisions
-        print(f"[supervisor] coordinator exited ({code}); restarting it", flush=True)
-        return self.crashes_in_a_row >= CRASH_LOOP_LIMIT
+        same = decisions == self.decisions_at_last_crash.get(partition)
+        self.crashes_in_a_row[partition] = self.crashes_in_a_row.get(partition, 0) + 1 if same else 1
+        self.decisions_at_last_crash[partition] = decisions
+        print(f"[supervisor] coordinator {partition} exited ({code}); restarting it", flush=True)
+        return self.crashes_in_a_row[partition] >= CRASH_LOOP_LIMIT
 
     async def _restart_dead_workers(self) -> None:
         """A worker that died is replaced. We know it is dead, so its lease is
@@ -188,17 +195,23 @@ class Supervisor:
             if proc.returncode is None:
                 proc.kill()
 
-    async def stop(self) -> None:
+    async def stop(self, grace: float = 0.0) -> None:
+        """Stop every process. With a grace period, the processes get that long
+        to notice the session is over and exit on their own first (workers log
+        their claim counts on the way out)."""
+        running = [p.wait() for p in self._procs(world=False) if p.returncode is None]
+        if grace and running:
+            await asyncio.wait([asyncio.ensure_future(w) for w in running], timeout=grace)
         for proc in self._procs():
             if proc.returncode is None:
                 proc.terminate()
         for proc in self._procs():
             await _stop(proc)
 
-    def _procs(self) -> list[asyncio.subprocess.Process]:
+    def _procs(self, world: bool = True) -> list[asyncio.subprocess.Process]:
         procs = [proc for _, proc in self.workers.values()]
-        procs += [self.coordinator] if self.coordinator else []
-        return procs + ([self.world.proc] if self.world else [])
+        procs += list(self.coordinators.values())
+        return procs + ([self.world.proc] if self.world and world else [])
 
 
 async def _spawn(module: str, *args: str, show: bool = False) -> asyncio.subprocess.Process:
@@ -235,6 +248,8 @@ async def create_session(engine, args: argparse.Namespace) -> UUID:
                 goal_kind=args.goal,
                 n_drifts=ALL_DRIFTS if args.goal == "all" else 1,
                 crash_rate=args.crashes,
+                partitions=args.coordinators,
+                wakeups="poll" if args.poll else "notify",
                 goal=GOALS[args.goal].format(hosts=", ".join(START_HOSTS)),
                 start_hosts=list(START_HOSTS),
                 status="running",
@@ -242,7 +257,9 @@ async def create_session(engine, args: argparse.Namespace) -> UUID:
         )
         await crud.log_event(conn, sid, "supervisor", "session_started", {"seed": args.seed})
         for host in START_HOSTS:
-            await crud.create_task(conn, sid, "discover_host", DiscoverInput(host=host))
+            await crud.create_task(
+                conn, sid, "discover_host", DiscoverInput(host=host), partitions=args.coordinators
+            )
     return sid
 
 
@@ -324,11 +341,14 @@ async def main(args: argparse.Namespace) -> int:
             session = await crud.get_session(conn, sid)
         print(
             f"[supervisor] session {sid}: seed {args.seed}, {args.hosts} hosts, fault rate {args.chaos}, "
-            f"goal '{args.goal}', crash rate {args.crashes}"
+            f"goal '{args.goal}', crash rate {args.crashes}, {args.coordinators} coordinator(s), "
+            f"{args.discovery}+{args.analysis} workers, {'polling' if args.poll else 'LISTEN/NOTIFY'}"
         )
 
-    sup = Supervisor(engine, session, deadline=time.time() + args.max_seconds, quiet=args.quiet)
+    workers = {**WORKERS, "discovery": args.discovery, "analysis": args.analysis}
+    sup = Supervisor(engine, session, workers, deadline=time.time() + args.max_seconds, quiet=args.quiet)
     await sup.start()
+    outcome = "interrupted"
     try:
         outcome = await sup.watch(args.kill_at)
         if outcome == "killed":
@@ -343,7 +363,7 @@ async def main(args: argparse.Namespace) -> int:
             print(f"[supervisor] stopping, and the session stays open for: just start --resume {sid}")
             return 2
     finally:
-        await sup.stop()
+        await sup.stop(grace=STOP_GRACE_SECONDS if outcome == "finished" else 0.0)
 
     score = await score_session(engine, sid)
     await engine.dispose()
@@ -358,6 +378,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--chaos", type=float, default=DEFAULT_FAULT_RATE, help="share of HTTP calls that fail")
     p.add_argument("--goal", choices=sorted(GOALS), default="one", help="find one drift, or all of them")
     p.add_argument("--crashes", type=float, default=0.0, help="share of task attempts that crash a process")
+    p.add_argument("--coordinators", type=int, default=1, help="split the plan between this many")
+    p.add_argument("--discovery", type=int, default=WORKERS["discovery"], help="discovery workers")
+    p.add_argument("--analysis", type=int, default=WORKERS["analysis"], help="analysis workers")
+    p.add_argument("--poll", action="store_true", help="poll for work instead of LISTEN/NOTIFY")
     p.add_argument("--step-budget", type=int, default=DEFAULT_STEP_BUDGET)
     p.add_argument("--max-seconds", type=float, default=600, help="safety limit on wall-clock time")
     p.add_argument("--kill-at", type=int, help="crash the whole run after this many steps")

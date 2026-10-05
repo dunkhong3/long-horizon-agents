@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, Response
 
 from lha.config import TIMEOUT_FAULT_SECONDS
 from lha.faults import pick_fault, roll
-from lha.world.model import World
+from lha.world.model import World, doc_page
 
 
 def create_app(world: World, fault_rate: float) -> FastAPI:
@@ -74,10 +74,14 @@ def create_app(world: World, fault_rate: float) -> FastAPI:
         return {"host": host, "service": service, "replicas": replicas}
 
     @app.get("/hosts/{host}/documents/{name}")
-    async def fetch_document(host: str, name: str) -> dict:
+    async def fetch_document(host: str, name: str, page: int = 0) -> dict:
+        # Documents come in pages, because a big one (registry.json in a big
+        # world) would not fit in any context window in one piece.
         text = world.documents.get(host, {}).get(name)
-        if text is None:
-            raise HTTPException(404, f"no document {name} on {host}")
-        return {"host": host, "name": name, "content": text}
+        found = doc_page(text, page) if text is not None else None
+        if found is None:
+            raise HTTPException(404, f"no page {page} of document {name} on {host}")
+        content, pages = found
+        return {"host": host, "name": name, "page": page, "pages": pages, "content": content}
 
     return app

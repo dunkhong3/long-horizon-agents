@@ -67,3 +67,25 @@ async def test_facts_supersede_and_never_replace_verified(engine):
         await crud.update_fact(conn, sid, b, status="verified")
         with pytest.raises(crud.FactConflict):
             await crud.upsert_fact(conn, sid, "service:x@host-1", "config.replicas", 3, source_task_id=tid)
+
+
+async def test_batched_fact_writes_follow_the_same_rules(engine):
+    sid = await new_session(engine)
+    tid = uuid7()
+    async with engine.begin() as conn:
+        await crud.upsert_facts(conn, sid, [("service:x@host-1", "config.replicas", 1, None),
+                                            ("service:y@host-1", "config.replicas", 2, None)],
+                                source_task_id=tid)  # fmt: skip
+        x = await crud.current_fact(conn, sid, "service:x@host-1", "config.replicas")
+        # The same value changes nothing, and a new value supersedes the old row.
+        await crud.upsert_facts(conn, sid, [("service:x@host-1", "config.replicas", 1, None),
+                                            ("service:y@host-1", "config.replicas", 3, None)],
+                                source_task_id=tid)  # fmt: skip
+        assert (await crud.current_fact(conn, sid, "service:x@host-1", "config.replicas")).id == x.id
+        assert (await crud.current_fact(conn, sid, "service:y@host-1", "config.replicas")).value == 3
+
+        await crud.update_fact(conn, sid, x.id, status="verified")
+        with pytest.raises(crud.FactConflict):
+            await crud.upsert_facts(
+                conn, sid, [("service:x@host-1", "config.replicas", 5, None)], source_task_id=tid
+            )

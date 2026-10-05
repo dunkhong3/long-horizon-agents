@@ -19,7 +19,9 @@ first round, so the circuit breaker opens for it.
 """
 
 import json
+import math
 import random
+import re
 from dataclasses import dataclass, field
 
 START_HOSTS = ("host-1", "host-2", "host-3")
@@ -28,6 +30,8 @@ REGISTRY_DOC = "registry.json"
 CHAIN_LENGTH = 3  # extra hops below the deepest other host to reach the drift
 N_DECOYS = 3
 WIDE_SERVICES = 40  # services on the one 'wide' host, too many to read in one attempt
+DOC_PAGE_LINES = 40  # documents are served in pages of this many lines
+REGISTRY_LINE = re.compile(r'^\s*"([^"]+)": (\d+),?$', re.MULTILINE)
 
 SERVICE_NAMES = (
     "payments", "search", "cache", "auth", "billing", "queue", "mailer",
@@ -166,6 +170,21 @@ def generate_world(seed: int, n_hosts: int = 20, n_drifts: int = 1) -> World:
     target = rng.choice([h for h in all_hosts if h not in (*chain, REGISTRY_HOST)])
     world.documents[target]["migration.md"] = f"{dead} was decommissioned last quarter."
     return world
+
+
+def doc_page(text: str, page: int) -> tuple[str, int] | None:
+    """One page of a document and how many pages it has, or None past the end."""
+    lines = text.splitlines()
+    pages = max(1, math.ceil(len(lines) / DOC_PAGE_LINES))
+    if not 0 <= page < pages:
+        return None
+    return "\n".join(lines[page * DOC_PAGE_LINES : (page + 1) * DOC_PAGE_LINES]), pages
+
+
+def registry_entries(content: str) -> dict[str, int]:
+    """The registry entries on one page of registry.json, which has one entry per line,
+    so every page can be read on its own."""
+    return {service: int(n) for service, n in REGISTRY_LINE.findall(content)}
 
 
 def _runbook(rng: random.Random, host: str, services: list[str], kids: list[str]) -> str:

@@ -36,6 +36,8 @@ sessions = Table(
     Column("goal_kind", Text, nullable=False),  # 'one' drift or 'all' drifts
     Column("n_drifts", Integer, nullable=False),  # how many the world plants
     Column("crash_rate", Float, nullable=False),  # injected crashes per attempt
+    Column("partitions", Integer, nullable=False),  # coordinators splitting the plan
+    Column("wakeups", Text, nullable=False),  # 'notify' (LISTEN/NOTIFY) or 'poll'
     Column("goal", Text, nullable=False),
     Column("start_hosts", JSONB, nullable=False),
     Column("status", Text, nullable=False),  # running | succeeded | failed
@@ -70,6 +72,7 @@ tasks = Table(
     Column("parent_task_id", UUID(as_uuid=True)),  # whose result created this task
     Column("type", Text, nullable=False),
     Column("role", Text, nullable=False),
+    Column("partition", Integer, nullable=False),  # which coordinator decides its results
     Column("input", JSONB, nullable=False),
     Column("scope", JSONB, nullable=False),  # which facts the context builder selects
     Column("status", Text, nullable=False),  # ready|leased|submitted|succeeded|failed|split|cancelled
@@ -79,11 +82,13 @@ tasks = Table(
     Column("lease_expires_at", DateTime(timezone=True)),
     Column("not_before", DateTime(timezone=True)),  # backoff
     Column("result", JSONB),  # submitted output, before the coordinator accepts it
+    Column("submitted_at", DateTime(timezone=True)),
     Column("created_at", DateTime(timezone=True), **CREATED_AT),
     # The same task is never created twice (two documents can mention the
     # same host; a resumed coordinator can repeat a decision).
     UniqueConstraint("session_id", "task_key", name="tasks_one_per_key"),
     Index("tasks_claim", "session_id", "status", "role", "created_at"),
+    Index("tasks_by_partition", "session_id", "partition", "status"),
 )
 
 facts = Table(

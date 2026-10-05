@@ -200,10 +200,16 @@ async def _pointers(conn: AsyncConnection, session_id: UUID, task: Row) -> list[
 
 def _wanted(task: Row, path: str) -> bool:
     """Whether a batch of a split discovery would read this path, so pointers
-    for the other batches' services don't take up its budget."""
-    services = task.input.get("services")
-    if services is None:
+    for the other batches' reads don't take up its budget."""
+    inp = task.input
+    if inp.get("services") is None:
+        return True  # not a batch, so it reads everything on its host
+    host = inp["host"]
+    if path == f"/hosts/{host}" or path in {f"/hosts/{host}/services/{s}" for s in inp["services"]}:
         return True
-    host = task.input["host"]
-    reads = {f"/hosts/{host}", *(f"/hosts/{host}/services/{s}" for s in services)}
-    return path in reads or (task.input.get("part", 0) <= 1 and path.startswith(f"/hosts/{host}/documents/"))
+    for doc in inp.get("documents") or []:
+        page = inp.get("page")
+        prefix = f"/hosts/{host}/documents/{doc}?page="
+        if path == f"{prefix}{page}" or (page is None and path.startswith(prefix)):
+            return True
+    return False

@@ -24,10 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from lha.agents import analysis, discovery, reporter
 from lha.agents.base import AgentContext
-from lha.config import HEARTBEAT_SECONDS, LEASE_SECONDS, POLL_SECONDS
+from lha.config import HEARTBEAT_SECONDS, IDLE_MAX_SECONDS, LEASE_SECONDS, POLL_SECONDS
 from lha.context import ContextOverflow, build_packet
 from lha.db import crud, make_engine
 from lha.db.models import events
+from lha.db.notify import Listener
 from lha.faults import roll
 from lha.tools import ToolBox, ToolFailure
 
@@ -55,15 +56,36 @@ class Worker:
     async def run(self) -> None:
         async with self.engine.connect() as conn:
             self.session = await crud.get_session(conn, self.session_id)
-        async with httpx.AsyncClient(base_url=self.world_url) as http:
+        listener = None
+        if self.session.wakeups == "notify":
+            listener = Listener("lha_ready", f"{self.session_id}:{self.role}")
+        claims = empty = 0
+        async with httpx.AsyncClient(base_url=self.world_url) as http, listener or contextlib.nullcontext():
             self.http = http
             while await self._session_running() and not self._orphaned():
                 async with self.engine.begin() as conn:
                     task = await crud.claim_task(conn, self.session_id, self.role, self.name)
+                claims += 1
                 if task is None:
-                    await asyncio.sleep(POLL_SECONDS)
+                    empty += 1
+                    await self._idle(listener)
                     continue
                 await self._handle(task)
+        # How often we asked for work and found none, which is what the
+        # benchmark compares between polling and LISTEN/NOTIFY.
+        stats = {"claims": claims, "empty_claims": empty, "wakeups": listener.wakeups if listener else 0}
+        async with self.engine.begin() as conn:
+            await crud.log_event(conn, self.session_id, self.name, "worker_stats", stats)
+
+    async def _idle(self, listener: Listener | None) -> None:
+        """Wait for work, which is a NOTIFY saying a task for our role is ready,
+        or the moment a backed-off task becomes due, whichever comes first."""
+        if listener is None:
+            await asyncio.sleep(POLL_SECONDS)
+            return
+        async with self.engine.connect() as conn:
+            due = await crud.seconds_until_due(conn, self.session_id, self.role)
+        await listener.wait(IDLE_MAX_SECONDS if due is None else min(due, IDLE_MAX_SECONDS))
 
     def _orphaned(self) -> bool:
         """The supervisor died without stopping us (e.g. it was SIGKILLed)."""
@@ -186,7 +208,7 @@ def _error(kind: str, message: str) -> dict[str, Any]:
 
 
 async def main(args: argparse.Namespace) -> None:
-    engine = make_engine()
+    engine = make_engine(pool_size=2)  # many workers share one Postgres
     try:
         await Worker(engine, UUID(args.session), args.role, args.name, args.world).run()
     finally:

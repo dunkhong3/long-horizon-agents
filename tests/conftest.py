@@ -18,7 +18,7 @@ async def new_session(engine, **overrides):
     sid = uuid7()
     values = dict(
         id=sid, seed=1, n_hosts=20, fault_rate=0.0, step_budget=100, goal_kind="one", n_drifts=1,
-        crash_rate=0.0, goal="test", start_hosts=["host-1"], status="running",
+        crash_rate=0.0, partitions=1, wakeups="notify", goal="test", start_hosts=["host-1"], status="running",
     )  # fmt: skip
     async with engine.begin() as conn:
         await conn.execute(sessions.insert().values(**(values | overrides)))

@@ -5,6 +5,7 @@ must validate against the output model of its task type before the
 coordinator even looks at it.
 """
 
+import hashlib
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -28,8 +29,12 @@ class DiscoverInput(BaseModel):
     host: str
     round: int = 1
     # Set when a host was too big for one attempt and its discovery was split
-    # into batches, where part 1 of N also reads the documents.
+    # into batches, as part `part` of `parts`. A batch reads exactly the
+    # services and documents it lists (None means everything the host lists),
+    # and a document too big for one attempt is split again into single pages.
     services: list[str] | None = None
+    documents: list[str] | None = None
+    page: int | None = None
     part: int = 0
     parts: int = 0
 
@@ -70,8 +75,12 @@ class ServiceRead(BaseModel):
 
 
 class DocumentRead(BaseModel):
+    """One page of a document, which for most documents is the whole of it."""
+
     name: str
-    mentions: list[str]  # hosts named in the document
+    page: int = Field(ge=0)
+    pages: int = Field(ge=1)
+    mentions: list[str]  # hosts named on this page
     registry: dict[str, int] | None = None  # only for registry.json
     event_id: str
 
@@ -129,10 +138,12 @@ def task_key(task_type: str, inp: BaseModel) -> str:
     It is the same in every run, so it stops the same task being created
     twice and it seeds the faults. Round 1 has no suffix, and a deliberate new
     round of the same work gets '#n'. A batch of a split discovery adds
-    '/<part>of<parts>' before the round, as in 'discover_host:host-7/2of4'.
+    '/<part>of<parts>' before the round, as in 'discover_host:host-7/2of4',
+    and a single page of a document adds '/p<page>' after that.
     """
     if isinstance(inp, DiscoverInput):
         base = f"discover_host:{inp.host}" + (f"/{inp.part}of{inp.parts}" if inp.parts else "")
+        base += f"/p{inp.page}" if inp.page is not None else ""
     elif isinstance(inp, CompareInput):
         base = f"compare_service:{inp.service}@{inp.host}"
     elif isinstance(inp, VerifyInput):
@@ -163,3 +174,17 @@ def task_scope(inp: BaseModel) -> list[str]:
     if isinstance(inp, ReportInput):
         return ["verified_drifts"]
     raise TypeError(f"unknown input {inp!r}")
+
+
+def task_partition(inp: BaseModel, partitions: int) -> int:
+    """Which coordinator decides this task's results, out of `partitions`.
+
+    Tasks are split by host, with a stable hash so every process agrees, which
+    keeps every fact about a host (and its services and documents) with one
+    coordinator. Tasks without a host, which is only the report, go to the
+    leader, partition 0.
+    """
+    host = getattr(inp, "host", None)
+    if partitions <= 1 or host is None:
+        return 0
+    return int.from_bytes(hashlib.sha256(host.encode()).digest()[:4], "big") % partitions

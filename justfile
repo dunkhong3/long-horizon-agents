@@ -44,3 +44,7 @@ demo:
 # the system against the naive full-history baseline
 bench *args:
     uv run python -m lha.bench {{args}}
+
+# one big world with more and more workers and coordinators
+scale *args:
+    uv run python -m lha.scale {{args}}

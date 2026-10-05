@@ -7,6 +7,7 @@ services:
       POSTGRES_DB: lha
     ports:
       - "5433:5432"  # 5433 on the host, so it never clashes with another local Postgres
+    command: ["postgres", "-c", "max_connections=300"]  # room for many workers (just scale)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U lha"]
       interval: 2s
