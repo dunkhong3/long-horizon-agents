@@ -1,6 +1,6 @@
 """Waking up on Postgres LISTEN/NOTIFY instead of polling.
 
-A trigger on `tasks` (lha/db/__init__.py) sends a notification on the
+A trigger on `tasks` (lha/db/migrations/versions/0001_initial.py) sends a notification on the
 channel 'lha_ready' with '<session>:<role>' when a task becomes ready, and on
 'lha_submitted' with '<session>:<partition>' when a result is submitted.
 A Listener holds one plain asyncpg connection that listens on one channel

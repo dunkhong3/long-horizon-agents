@@ -1,4 +1,4 @@
-"""Full runs: real processes, real Postgres, faults on. Each must PASS."""
+"""Full runs with real processes, a real Postgres and faults on, where every run must PASS."""
 
 import re
 import subprocess

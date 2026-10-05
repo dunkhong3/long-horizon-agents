@@ -6,7 +6,7 @@ This is a personal side project, a system of several agents that stays coherent 
 
 ## Working preferences
 
-Keep responses short and concise, and push directly to `main`, with no feature branches or pull requests unless asked. Build the v1 core end to end first (see 'Scope and versions' in `docs/design.md`), and keep the scope small, going deep on state and context management and on failure detection and recovery, and keeping everything else simple. There are never any real LLM calls, meaning no API keys and no spend, because every agent uses a deterministic fake model through Pydantic AI's `FunctionModel`. Long-form docs go in `docs/`, while `README.md` and `NOTES.md` stay at the root. Write everything (code, docs and commit messages) as a personal side project, and don't mention companies or who it was built for.
+Keep responses short and concise, and push directly to `main`, with no feature branches or pull requests unless asked. Build the v1 core end to end first (see 'Scope' in `docs/design.md`), and keep the scope small, going deep on state and context management and on failure detection and recovery, and keeping everything else simple. There are never any real LLM calls, meaning no API keys and no spend, because every agent uses a deterministic fake model through Pydantic AI's `FunctionModel`. Long-form docs go in `docs/`, while `README.md` and `NOTES.md` stay at the root. Write everything (code, docs and commit messages) as a personal side project, and don't mention companies or who it was built for.
 
 ## Writing style
 

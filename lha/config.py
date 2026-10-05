@@ -12,8 +12,8 @@ MAX_ROUNDS = 2  # discover_host and compare_service
 MAX_VERIFY_ROUNDS = 3  # verify_drift
 NEW_ROUND_DELAY_SECONDS = 1.0  # 'try again later, after other work'
 
-# The circuit breaker per host.
-BREAKER_THRESHOLD = 3  # failed network attempts in a row against one host
+# The circuit breaker per resource (a host in the audit, a source in the research brief).
+BREAKER_THRESHOLD = 3  # failed network attempts in a row against one resource
 BREAKER_COOLDOWN_SECONDS = 3.0
 
 # Stalls, where no result was accepted for this many steps.

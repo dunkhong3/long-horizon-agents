@@ -141,7 +141,7 @@ async def test_a_pointer_copy_counts_only_if_it_matches_its_original(engine):
         assert str(forged) not in cited
 
 
-async def test_only_one_coordinator_per_session(engine, monkeypatch):
+async def test_only_one_coordinator_per_partition(engine, monkeypatch):
     sid = await new_session(engine)
     monkeypatch.setattr(coordinator_module, "LOCK_WAIT_SECONDS", 0.0)
     async with engine.connect() as holder:

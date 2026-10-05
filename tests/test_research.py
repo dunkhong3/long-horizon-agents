@@ -1,4 +1,4 @@
-"""The research brief: its library, its settle rule and its source checks."""
+"""The research brief's library, its settle rule and its source checks."""
 
 import pytest
 from sqlalchemy import select
