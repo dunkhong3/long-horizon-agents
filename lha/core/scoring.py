@@ -1,7 +1,9 @@
-"""The scorer, which works out whether the run found the planted drift with verified evidence.
+"""The scorer, which works out whether a run reached its goal, and counts what happened on the way.
 
 It builds the world again from the session's seed (nothing about the answer
-is stored in the database) and compares it with the accepted report.
+is stored in the database), and the domain compares it with the accepted
+report. The counts are the same for every domain, and the domain adds a few
+of its own.
 """
 
 from collections import Counter
@@ -9,14 +11,13 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, literal, select
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from lha.core.domain import Domain, get_domain
+from lha.core.schemas import VERIFIED
 from lha.db import crud
-from lha.db.models import events, facts, tasks
-from lha.schemas import facts as F
-from lha.world.model import World, generate_world
+from lha.db.models import events, tasks
 
 
 @dataclass
@@ -30,40 +31,21 @@ class Score:
 async def score_session(engine: AsyncEngine, session_id: UUID) -> Score:
     async with engine.connect() as conn:
         session = await crud.get_session(conn, session_id)
-        world = generate_world(session.seed, session.n_hosts, session.n_drifts)
+        domain = get_domain(session.domain)
+        world = domain.make_world(session.seed, session.n_hosts, session.goal_kind)
         findings = (session.report or {}).get("findings", [])
-        cited = [await crud.get_fact(conn, UUID(f["drift_fact_id"])) for f in findings]
-        all_verified = bool(cited) and all(f is not None and f.status == F.VERIFIED for f in cited)
-
-        checks = [("session succeeded", session.status == "succeeded")]
-        if session.goal_kind == "all":
-            planted = {(s.name, s.host, s.expected, s.actual) for s in world.drifts}
-            reported = {(f["service"], f["host"], f["expected"], f["actual"]) for f in findings}
-            checks += [
-                (f"found all {len(planted)} planted drifts", planted <= reported),
-                ("no finding that isn't a planted drift", reported <= planted),
-            ]
-        else:
-            checks += answer_checks(world, findings[0] if len(findings) == 1 else {})
-        checks.append(("every cited drift fact is verified", all_verified))
-        stats = await _stats(conn, session_id, world)
+        cited = [await crud.get_fact(conn, UUID(f["fact_id"])) for f in findings]
+        verified = bool(cited) and all(f is not None and f.status == VERIFIED for f in cited)
+        checks = [
+            ("session succeeded", session.status == "succeeded"),
+            *await domain.score(conn, session, world),
+            ("every cited fact is verified", verified),
+        ]
+        stats = {**await _stats(conn, domain, session_id), **await domain.stats(conn, session_id, world)}
     return Score(all(ok for _, ok in checks), checks, stats, session.report)
 
 
-def answer_checks(world: World, report: dict[str, Any]) -> list[tuple[str, bool]]:
-    """Whether a finding names the planted drift, which is shared with the naive baseline."""
-    drift = world.drift
-    return [
-        (f"found the drifted service ({drift.name})", report.get("service") == drift.name),
-        (f"on the right host ({drift.host})", report.get("host") == drift.host),
-        (
-            f"right counts (expected {drift.expected}, actual {drift.actual})",
-            (report.get("expected"), report.get("actual")) == (drift.expected, drift.actual),
-        ),
-    ]
-
-
-async def _stats(conn, sid: UUID, world) -> dict[str, Any]:
+async def _stats(conn, domain: Domain, sid: UUID) -> dict[str, Any]:
     async def count(table, *where) -> int:
         q = select(func.count()).select_from(table).where(table.c.session_id == sid, *where)
         return (await conn.execute(q)).scalar_one()
@@ -93,11 +75,6 @@ async def _stats(conn, sid: UUID, world) -> dict[str, Any]:
             )
         ).all()
     )
-    hosts_found = await count(
-        facts, facts.c.key == F.EXISTS, facts.c.value == literal(True, JSONB),
-        facts.c.status != F.SUPERSEDED,
-    )  # fmt: skip
-    refuted = await count(facts, facts.c.key == F.DRIFT, facts.c.status == F.REFUTED)
     prompts = await conn.execute(
         select(e.payload["prompt_tokens"].as_integer()).where(e.session_id == sid, e.kind == "model_call")
     )
@@ -128,11 +105,8 @@ async def _stats(conn, sid: UUID, world) -> dict[str, Any]:
         "pointer_fetches": pointer_fetches,
         "leases_lost": lease_lost,
         "tasks": task_status,
-        "hosts_checked": f"{hosts_found}/{world.n_hosts}",
-        "decoys_refuted": f"{refuted}/{len(world.decoys)}",
-        "drifts_planted": len(world.drifts),
         **prompt_stats([t for t in prompts.scalars() if t is not None]),
-        "repeated_reads": repeated_reads((path, task_type == "verify_drift") for path, task_type in reads),
+        "repeated_reads": repeated_reads((path, domain.task_types[t].rereads) for path, t in reads),
     }
 
 

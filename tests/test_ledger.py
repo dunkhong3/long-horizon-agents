@@ -5,16 +5,16 @@ import asyncio
 import pytest
 
 from lha.db import crud
+from lha.domains.audit.tasks import DiscoverInput
 from lha.ids import uuid7
-from lha.schemas.tasks import DiscoverInput
-from tests.conftest import new_session
+from tests.conftest import add_task, new_session
 
 
 async def test_task_creation_is_idempotent(engine):
     sid = await new_session(engine)
     async with engine.begin() as conn:
-        first = await crud.create_task(conn, sid, "discover_host", DiscoverInput(host="host-4"))
-        again = await crud.create_task(conn, sid, "discover_host", DiscoverInput(host="host-4"))
+        first = await add_task(conn, sid, "discover_host", DiscoverInput(host="host-4"))
+        again = await add_task(conn, sid, "discover_host", DiscoverInput(host="host-4"))
     assert first is not None and again is None
 
 
@@ -23,7 +23,7 @@ async def test_concurrent_claims_get_different_tasks(engine):
     sid = await new_session(engine)
     async with engine.begin() as conn:
         for h in ("host-1", "host-2", "host-3"):
-            await crud.create_task(conn, sid, "discover_host", DiscoverInput(host=h))
+            await add_task(conn, sid, "discover_host", DiscoverInput(host=h))
 
     async def claim(name):
         async with engine.begin() as conn:
@@ -37,7 +37,7 @@ async def test_concurrent_claims_get_different_tasks(engine):
 async def test_stale_attempt_is_fenced_out(engine):
     sid = await new_session(engine)
     async with engine.begin() as conn:
-        await crud.create_task(conn, sid, "discover_host", DiscoverInput(host="host-1"))
+        await add_task(conn, sid, "discover_host", DiscoverInput(host="host-1"))
         task = await crud.claim_task(conn, sid, "discovery", "worker-a")
     # The coordinator reclaims the task (attempt 1 -> 2) while worker-a is slow.
     async with engine.begin() as conn:

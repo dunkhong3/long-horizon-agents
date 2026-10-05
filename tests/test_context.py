@@ -2,8 +2,8 @@
 
 import pytest
 
-from lha.context import ContextOverflow, estimate_tokens, pack
-from lha.schemas.context import EventView, FactView, Pinned, PointerView
+from lha.core.context import ContextOverflow, estimate_tokens, pack
+from lha.core.schemas import EventView, FactView, Pinned, PointerView
 
 PINNED = Pinned(goal="find the drift", task_type="discover_host", task_key="k", attempt=1, input={})
 

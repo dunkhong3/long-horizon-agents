@@ -4,7 +4,8 @@
     python -m lha.run --seed 42 --chaos 0.3     # more faults
     python -m lha.run --seed 42 --goal all      # find every drift, not just one
     python -m lha.run --seed 42 --crashes 0.05  # crash workers and the coordinator
-    python -m lha.run --seed 42 --hosts 200 --coordinators 4 --discovery 16 --analysis 16
+    python -m lha.run --seed 42 --hosts 200 --coordinators 4 --workers 16,16
+    python -m lha.run --domain research --seed 42   # the research brief
     python -m lha.run --seed 42 --kill-at 120   # crash everything after step 120
     python -m lha.run --resume [SESSION]        # continue an unfinished run (default: latest)
 
@@ -27,36 +28,22 @@ from uuid import UUID
 import httpx
 from sqlalchemy import func, select, update
 
-from lha.config import ALL_DRIFTS, CRASH_LOOP_LIMIT, DEFAULT_FAULT_RATE, DEFAULT_HOSTS, DEFAULT_STEP_BUDGET
-from lha.coordinator import progress_line
+from lha.config import CRASH_LOOP_LIMIT, DEFAULT_FAULT_RATE, DEFAULT_STEP_BUDGET
+from lha.core.coordinator import progress_line
+from lha.core.domain import create_task, get_domain
+from lha.core.scoring import Score, score_session
 from lha.db import crud, init_schema, make_engine
 from lha.db.models import events, sessions, tasks
+from lha.domains import DOMAINS
 from lha.ids import uuid7
-from lha.schemas.tasks import DiscoverInput
-from lha.scoring import Score, score_session
-from lha.world.model import START_HOSTS
 
-# Worker processes per role, unless --discovery or --analysis say otherwise.
-WORKERS = {"discovery": 2, "analysis": 2, "reporter": 1}
+# Worker processes per role. The first two roles of a domain (discovery and
+# analysis in the audit) get two each unless --workers says otherwise, and the
+# last one, which writes the report, gets one.
+DEFAULT_WORKERS = 2
 TICK_SECONDS = 0.05
 STOP_GRACE_SECONDS = 3.0  # time for workers to exit by themselves after a finished run
 PROGRESS_EVERY_SECONDS = 2.0
-
-GOALS = {
-    "one": (
-        "Audit the deployment. Exactly one service runs a different number of "
-        "replicas than registry.json says. Find it, confirm it with independent "
-        "reads, and write a finding backed by verified facts. You start knowing "
-        "only these hosts: {hosts}."
-    ),
-    "all": (
-        "Audit the deployment. Some services run a different number of replicas "
-        "than registry.json says. Explore every host, give every service a "
-        "verdict, confirm every drift with independent reads, and write a "
-        "finding listing every verified drift. You start knowing only these "
-        "hosts: {hosts}."
-    ),
-}
 
 
 class WorldProcess:
@@ -70,10 +57,12 @@ class WorldProcess:
         await _stop(self.proc)
 
 
-async def start_world(seed: int, n_hosts: int, fault_rate: float, n_drifts: int = 1) -> WorldProcess:
+async def start_world(
+    domain: str, seed: int, size: int, fault_rate: float, goal: str = "one"
+) -> WorldProcess:
     port = _free_port()
     proc = await _spawn(
-        "lha.world", "--seed", str(seed), "--hosts", str(n_hosts), "--drifts", str(n_drifts),
+        "lha.core.world", "--domain", domain, "--seed", str(seed), "--size", str(size), "--goal", goal,
         "--fault-rate", str(fault_rate), "--port", str(port),
     )  # fmt: skip
     url = f"http://127.0.0.1:{port}"
@@ -107,7 +96,7 @@ class Supervisor:
 
     async def start(self) -> None:
         s = self.session
-        self.world = await start_world(s.seed, s.n_hosts, s.fault_rate, s.n_drifts)
+        self.world = await start_world(s.domain, s.seed, s.n_hosts, s.fault_rate, s.goal_kind)
         for partition in range(s.partitions):
             await self._start_coordinator(partition)
         for role, count in self.worker_counts.items():
@@ -117,12 +106,12 @@ class Supervisor:
     async def _start_coordinator(self, partition: int) -> None:
         args = ["--session", str(self.sid), "--partition", str(partition), "--deadline", str(self.deadline)]
         self.coordinators[partition] = await _spawn(
-            "lha.coordinator", *args, *(["--quiet"] if self.quiet else []), show=True
+            "lha.core.coordinator", *args, *(["--quiet"] if self.quiet else []), show=True
         )
 
     async def _start_worker(self, role: str, name: str) -> None:
         proc = await _spawn(
-            "lha.agents.worker", "--session", str(self.sid), "--role", role,
+            "lha.core.worker", "--session", str(self.sid), "--role", role,
             "--name", name, "--world", self.world.url,
         )  # fmt: skip
         self.workers[name] = (role, proc)
@@ -237,29 +226,30 @@ def _free_port() -> int:
 
 async def create_session(engine, args: argparse.Namespace) -> UUID:
     sid = uuid7()
+    domain = get_domain(args.domain)
+    world = domain.make_world(args.seed, args.hosts, args.goal)
+    start = domain.start(world)
     async with engine.begin() as conn:
         await conn.execute(
             sessions.insert().values(
                 id=sid,
+                domain=args.domain,
                 seed=args.seed,
                 n_hosts=args.hosts,
                 fault_rate=args.chaos,
                 step_budget=args.step_budget,
                 goal_kind=args.goal,
-                n_drifts=ALL_DRIFTS if args.goal == "all" else 1,
                 crash_rate=args.crashes,
                 partitions=args.coordinators,
                 wakeups="poll" if args.poll else "notify",
-                goal=GOALS[args.goal].format(hosts=", ".join(START_HOSTS)),
-                start_hosts=list(START_HOSTS),
+                goal=domain.goals[args.goal].format(start=", ".join(start), **domain.goal_args(world)),
+                start_points=start,
                 status="running",
             )
         )
         await crud.log_event(conn, sid, "supervisor", "session_started", {"seed": args.seed})
-        for host in START_HOSTS:
-            await crud.create_task(
-                conn, sid, "discover_host", DiscoverInput(host=host), partitions=args.coordinators
-            )
+        for task_type, inp in domain.start_tasks(world):
+            await create_task(conn, sid, domain, task_type, inp, partitions=args.coordinators)
     return sid
 
 
@@ -303,17 +293,9 @@ def print_score(score: Score, sid: UUID, elapsed: float) -> Path:
     print()
     for name, ok in score.checks:
         print(f"  {'✓' if ok else '✗'} {name}")
-    s = score.stats
     print()
-    print(
-        f"steps={s['steps']} tool_calls={s['tool_calls']} model_calls={s['model_calls']} "
-        f"faults_injected={s['faults_injected']} model_errors={s['model_errors_injected']} "
-        f"rejected={s['outputs_rejected']} retries={s['retries']} replans={s['replans']} "
-        f"splits={s['splits']} breaker_opened={s['breaker_opened']} reopened={s['reopened']} "
-        f"crashes={s['crashes_injected']} pointers={s['pointer_fetches']} "
-        f"hosts={s['hosts_checked']} decoys_refuted={s['decoys_refuted']} "
-        f"elapsed={elapsed:.1f}s"
-    )
+    shown = {k: v for k, v in score.stats.items() if not isinstance(v, dict) and not k.startswith("prompt")}
+    print(" ".join(f"{k}={v}" for k, v in shown.items()) + f" elapsed={elapsed:.1f}s")
     print(f"verdict={'PASS' if score.passed else 'FAIL'}  (session {sid}, files in {out_dir})")
     return out_dir
 
@@ -340,12 +322,18 @@ async def main(args: argparse.Namespace) -> int:
         async with engine.connect() as conn:
             session = await crud.get_session(conn, sid)
         print(
-            f"[supervisor] session {sid}: seed {args.seed}, {args.hosts} hosts, fault rate {args.chaos}, "
+            f"[supervisor] session {sid}: {args.domain}, seed {args.seed}, size {args.hosts}, "
+            f"fault rate {args.chaos}, "
             f"goal '{args.goal}', crash rate {args.crashes}, {args.coordinators} coordinator(s), "
-            f"{args.discovery}+{args.analysis} workers, {'polling' if args.poll else 'LISTEN/NOTIFY'}"
+            f"workers {'+'.join(map(str, args.workers))}, {'polling' if args.poll else 'LISTEN/NOTIFY'}"
         )
 
-    workers = {**WORKERS, "discovery": args.discovery, "analysis": args.analysis}
+    roles = get_domain(session.domain).roles
+    workers = {
+        role: (args.workers[i] if i < len(args.workers) else DEFAULT_WORKERS)
+        for i, role in enumerate(roles[:-1])
+    }
+    workers[roles[-1]] = 1
     sup = Supervisor(engine, session, workers, deadline=time.time() + args.max_seconds, quiet=args.quiet)
     await sup.start()
     outcome = "interrupted"
@@ -372,15 +360,29 @@ async def main(args: argparse.Namespace) -> int:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    args = _parser().parse_args(argv)
+    if args.hosts is None:
+        args.hosts = DOMAINS[args.domain].default_size
+    return args
+
+
+def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--domain", choices=sorted(DOMAINS), default="audit", help="what the agents work on")
     p.add_argument("--seed", type=int, default=42, help="fixes the world and the faults")
-    p.add_argument("--hosts", type=int, default=DEFAULT_HOSTS, help="size of the mock network")
+    p.add_argument(
+        "--hosts", "--size", type=int, help="size of the world (hosts, sources), with a default per domain"
+    )
     p.add_argument("--chaos", type=float, default=DEFAULT_FAULT_RATE, help="share of HTTP calls that fail")
-    p.add_argument("--goal", choices=sorted(GOALS), default="one", help="find one drift, or all of them")
+    p.add_argument(
+        "--goal", choices=["one", "all"], default="one", help="one drift or question, or all of them"
+    )
     p.add_argument("--crashes", type=float, default=0.0, help="share of task attempts that crash a process")
     p.add_argument("--coordinators", type=int, default=1, help="split the plan between this many")
-    p.add_argument("--discovery", type=int, default=WORKERS["discovery"], help="discovery workers")
-    p.add_argument("--analysis", type=int, default=WORKERS["analysis"], help="analysis workers")
+    p.add_argument(
+        "--workers", type=lambda v: [int(n) for n in v.split(",")], metavar="N,M",
+        default=[DEFAULT_WORKERS, DEFAULT_WORKERS], help="workers for the first two roles (default 2,2)",
+    )  # fmt: skip
     p.add_argument("--poll", action="store_true", help="poll for work instead of LISTEN/NOTIFY")
     p.add_argument("--step-budget", type=int, default=DEFAULT_STEP_BUDGET)
     p.add_argument("--max-seconds", type=float, default=600, help="safety limit on wall-clock time")
@@ -390,7 +392,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="continue an unfinished session (default: the latest one)",
     )  # fmt: skip
     p.add_argument("--quiet", action="store_true", help="no progress lines")
-    return p.parse_args(argv)
+    return p
 
 
 if __name__ == "__main__":

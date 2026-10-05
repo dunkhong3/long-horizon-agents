@@ -1,6 +1,6 @@
 """A worker process, which claims a task, runs its agent, submits the result and repeats.
 
-    python -m lha.agents.worker --session <id> --role discovery --name discovery-1
+    python -m lha.core.worker --session <id> --role discovery --name discovery-1
 
 Workers share nothing with each other or with the coordinator except
 Postgres. They write `events` (every model and tool call) and their own
@@ -22,22 +22,15 @@ from sqlalchemy import select
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from lha.agents import analysis, discovery, reporter
-from lha.agents.base import AgentContext
 from lha.config import HEARTBEAT_SECONDS, IDLE_MAX_SECONDS, LEASE_SECONDS, POLL_SECONDS
-from lha.context import ContextOverflow, build_packet
+from lha.core.agent import AgentContext
+from lha.core.context import ContextOverflow, build_packet
+from lha.core.domain import get_domain
+from lha.core.tools import ToolFailure
 from lha.db import crud, make_engine
 from lha.db.models import events
 from lha.db.notify import Listener
 from lha.faults import roll
-from lha.tools import ToolBox, ToolFailure
-
-AGENTS = {
-    "discover_host": discovery.run,
-    "compare_service": analysis.run_compare,
-    "verify_drift": analysis.run_verify,
-    "write_report": reporter.run,
-}
 
 
 class LeaseLost(Exception):
@@ -56,6 +49,7 @@ class Worker:
     async def run(self) -> None:
         async with self.engine.connect() as conn:
             self.session = await crud.get_session(conn, self.session_id)
+        self.domain = get_domain(self.session.domain)
         listener = None
         if self.session.wakeups == "notify":
             listener = Listener("lha_ready", f"{self.session_id}:{self.role}")
@@ -177,7 +171,7 @@ class Worker:
 
         try:
             async with self.engine.connect() as conn:
-                packet = await build_packet(conn, self.session, task)
+                packet = await build_packet(conn, self.domain, self.session, task)
             await log("context_packet", packet.model_dump(mode="json"))
             ctx = AgentContext(
                 seed=self.session.seed,
@@ -186,10 +180,10 @@ class Worker:
                 task_type=task.type,
                 attempt=task.attempt,
                 packet=packet,
-                tools=ToolBox(self.http, task.task_key, task.attempt, log, load),
+                tools=self.domain.tools(self.http, task.task_key, task.attempt, log, load),
                 log=log,
             )
-            output = await AGENTS[task.type](ctx)
+            output = await self.domain.task_types[task.type].agent(ctx)
             return output.model_dump(mode="json")
         except ToolFailure as e:
             return _error(e.kind, e.message)
@@ -218,7 +212,7 @@ async def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--session", required=True)
-    parser.add_argument("--role", required=True, choices=["discovery", "analysis", "reporter"])
+    parser.add_argument("--role", required=True, help="which tasks to claim, such as discovery")
     parser.add_argument("--name", required=True)
     parser.add_argument("--world", required=True, help="base URL of the mock network")
     try:

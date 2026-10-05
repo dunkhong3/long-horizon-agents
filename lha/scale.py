@@ -40,7 +40,7 @@ async def run_one(
 ) -> dict:
     cmd = [
         "--quiet", "--seed", str(args.seed), "--hosts", str(args.hosts), "--goal", "all",
-        "--step-budget", "100000", "--discovery", str(discovery), "--analysis", str(analysis),
+        "--step-budget", "100000", "--workers", f"{discovery},{analysis}",
         "--coordinators", str(coordinators), *(["--poll"] if wakeups == "poll" else []),
     ]  # fmt: skip
     proc = await asyncio.create_subprocess_exec(

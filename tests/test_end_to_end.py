@@ -39,9 +39,7 @@ def test_injected_crashes_pass():
 
 
 def test_partitioned_coordinators_with_more_workers_pass():
-    result = run(
-        "--seed", "106", "--goal", "all", "--coordinators", "3", "--discovery", "6", "--analysis", "6"
-    )
+    result = run("--seed", "106", "--goal", "all", "--coordinators", "3", "--workers", "6,6")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "found all 3 planted drifts" in result.stdout
 
@@ -50,6 +48,13 @@ def test_polling_instead_of_notify_passes():
     result = run("--seed", "107", "--poll")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "verdict=PASS" in result.stdout
+
+
+def test_research_brief_passes():
+    """The second domain, on the same core."""
+    result = run("--domain", "research", "--seed", "108", "--goal", "all", "--chaos", "0.3")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "answered all 6 project(s) asked about" in result.stdout
 
 
 def test_crash_then_resume_passes():

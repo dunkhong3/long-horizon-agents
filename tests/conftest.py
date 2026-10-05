@@ -1,7 +1,9 @@
 import pytest_asyncio
 
+from lha.core.domain import create_task
 from lha.db import init_schema, make_engine
 from lha.db.models import sessions
+from lha.domains.audit import AUDIT
 from lha.ids import uuid7
 
 
@@ -17,9 +19,15 @@ async def new_session(engine, **overrides):
     """A bare session row for tests that work on the tables directly."""
     sid = uuid7()
     values = dict(
-        id=sid, seed=1, n_hosts=20, fault_rate=0.0, step_budget=100, goal_kind="one", n_drifts=1,
-        crash_rate=0.0, partitions=1, wakeups="notify", goal="test", start_hosts=["host-1"], status="running",
+        id=sid, domain="audit", seed=1, n_hosts=20, fault_rate=0.0, step_budget=100, goal_kind="one",
+        crash_rate=0.0, partitions=1, wakeups="notify", goal="test", start_points=["host-1"],
+        status="running",
     )  # fmt: skip
     async with engine.begin() as conn:
         await conn.execute(sessions.insert().values(**(values | overrides)))
     return sid
+
+
+async def add_task(conn, sid, task_type, inp, partitions=1, domain=AUDIT):
+    """Create a task the way the coordinator does, for a domain (the audit by default)."""
+    return await create_task(conn, sid, domain, task_type, inp, partitions=partitions)

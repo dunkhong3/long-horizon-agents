@@ -15,7 +15,7 @@ in half, and whatever was left out is recorded in `omitted`.
 """
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import or_, select
@@ -31,16 +31,10 @@ from lha.config import (
 )
 from lha.db import crud
 from lha.db.models import events, facts
-from lha.schemas.context import ContextPacket, EventView, FactView, Pinned, PointerView
-from lha.schemas.facts import (
-    DRIFT,
-    EXPECTED,
-    REPLICAS,
-    SUPERSEDED,
-    VERIFIED,
-    registry_subject,
-    split_service_subject,
-)
+
+if TYPE_CHECKING:
+    from lha.core.domain import Domain
+from lha.core.schemas import SUPERSEDED, ContextPacket, EventView, FactView, Pinned, PointerView
 
 
 class ContextOverflow(Exception):
@@ -93,7 +87,7 @@ def pack(
     )
 
 
-async def build_packet(conn: AsyncConnection, session: Row, task: Row) -> ContextPacket:
+async def build_packet(conn: AsyncConnection, domain: "Domain", session: Row, task: Row) -> ContextPacket:
     pinned = Pinned(
         goal=session.goal,
         task_type=task.type,
@@ -103,20 +97,31 @@ async def build_packet(conn: AsyncConnection, session: Row, task: Row) -> Contex
     )
     return pack(
         pinned,
-        await _select_facts(conn, session.id, task.scope),
+        await _select_facts(conn, domain, session.id, task.scope),
         await _recent_events(conn, session.id, task.id),
-        await _pointers(conn, session.id, task),
+        await _pointers(conn, domain, session.id, task),
     )
 
 
-async def _select_facts(conn: AsyncConnection, session_id: UUID, scope: list[str]) -> list[FactView]:
-    """Current facts in the task's scope, picked with a plain SQL filter and no embeddings."""
-    conditions = []
+async def _select_facts(
+    conn: AsyncConnection, domain: "Domain", session_id: UUID, scope: list[str]
+) -> list[FactView]:
+    """Current facts in the task's scope, picked with a plain SQL filter and no embeddings.
+
+    A scope entry is an exact subject, a pattern where '*' stands for any
+    text (such as '*@host-4', everything on a host), or 'key:<key>=<status>'
+    for every fact with that key and status (such as every verified drift),
+    which also brings in the facts the domain says belong with each of them.
+    """
+    conditions, by_key = [], []
     for entry in scope:
-        if entry == "verified_drifts":
-            conditions.append((facts.c.key == DRIFT) & (facts.c.status == VERIFIED))
-        elif entry.startswith("*@"):
-            conditions.append(facts.c.subject.like(f"%@{entry[2:]}"))
+        if entry.startswith("key:"):
+            key, status = entry.removeprefix("key:").split("=")
+            by_key.append((key, status))
+            conditions.append((facts.c.key == key) & (facts.c.status == status))
+        elif "*" in entry:
+            pattern = entry.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").replace("*", "%")
+            conditions.append(facts.c.subject.like(pattern))
         else:
             conditions.append(facts.c.subject == entry)
     q = (
@@ -126,14 +131,9 @@ async def _select_facts(conn: AsyncConnection, session_id: UUID, scope: list[str
     )
     rows = list((await conn.execute(q)).all())
 
-    if "verified_drifts" in scope:
-        # The reporter also needs the registry entry and latest read behind
-        # each verified drift.
-        extra = []
-        for row in rows:
-            service, _ = split_service_subject(row.subject)
-            extra += [(registry_subject(service), EXPECTED), (row.subject, REPLICAS)]
-        for subject, key in extra:
+    if by_key:
+        related = [pair for row in rows if (row.key, row.status) in by_key for pair in domain.related(row)]
+        for subject, key in related:
             q = select(facts).where(
                 facts.c.session_id == session_id,
                 facts.c.subject == subject,
@@ -167,11 +167,13 @@ async def _recent_events(conn: AsyncConnection, session_id: UUID, task_id: UUID)
     return out
 
 
-async def _pointers(conn: AsyncConnection, session_id: UUID, task: Row) -> list[PointerView]:
+async def _pointers(
+    conn: AsyncConnection, domain: "Domain", session_id: UUID, task: Row
+) -> list[PointerView]:
     """Successful raw tool outputs this task may reuse, newest first.
 
-    Those come from its own earlier attempts, or for a batch of a split
-    discovery from the attempt that was too big (see crud.earlier_reads). Each
+    Those come from its own earlier attempts, or for a batch of a split task
+    from the attempt that was too big (see crud.earlier_reads). Each
     pointer says which tool and path the output came from but leaves the
     output out, and an agent can fetch one with the fetch_pointer tool instead
     of calling the network again. A fetched copy is not pointed at again,
@@ -192,24 +194,7 @@ async def _pointers(conn: AsyncConnection, session_id: UUID, task: Row) -> list[
             p.get("ok")
             and p["tool"] != "fetch_pointer"
             and p["path"] not in pointers
-            and _wanted(task, p["path"])
+            and domain.pointer_wanted(task, p["path"])
         ):
             pointers[p["path"]] = PointerView(id=str(event_id), tool=p["tool"], path=p["path"])
     return list(pointers.values())[:MAX_POINTERS]
-
-
-def _wanted(task: Row, path: str) -> bool:
-    """Whether a batch of a split discovery would read this path, so pointers
-    for the other batches' reads don't take up its budget."""
-    inp = task.input
-    if inp.get("services") is None:
-        return True  # not a batch, so it reads everything on its host
-    host = inp["host"]
-    if path == f"/hosts/{host}" or path in {f"/hosts/{host}/services/{s}" for s in inp["services"]}:
-        return True
-    for doc in inp.get("documents") or []:
-        page = inp.get("page")
-        prefix = f"/hosts/{host}/documents/{doc}?page="
-        if path == f"{prefix}{page}" or (page is None and path.startswith(prefix)):
-            return True
-    return False

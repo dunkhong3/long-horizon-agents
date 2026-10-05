@@ -1,4 +1,4 @@
-"""The naive baseline, which is one agent whose prompt is its whole history.
+"""The naive baseline, which is one agent whose prompt is its whole history (for the audit).
 
     python -m lha.baseline --seed 42                    # unlimited history
     python -m lha.baseline --seed 42 --window 4000      # history cut to fit a window
@@ -37,13 +37,15 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart, Tool
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.usage import UsageLimits
 
-from lha.agents.base import part_content, parts_tokens
 from lha.config import DEFAULT_FAULT_RATE, DEFAULT_HOSTS, DEFAULT_STEP_BUDGET, MODEL_ERROR_RATE
-from lha.context import estimate_tokens
+from lha.core.agent import part_content, parts_tokens
+from lha.core.context import estimate_tokens
+from lha.core.scoring import prompt_stats, repeated_reads
+from lha.core.tools import ToolFailure
+from lha.domains.audit import answer_checks
+from lha.domains.audit.tools import AuditTools
+from lha.domains.audit.world import REGISTRY_DOC, START_HOSTS, generate_world, registry_entries
 from lha.faults import roll
-from lha.scoring import answer_checks, prompt_stats, repeated_reads
-from lha.tools import ToolBox, ToolFailure
-from lha.world.model import REGISTRY_DOC, START_HOSTS, generate_world, registry_entries
 
 HOST_NAME = re.compile(r"\bhost-\d+\b")
 GIVE_UP_AFTER = 3  # failures in a row of the same call, as seen in the window
@@ -281,9 +283,9 @@ class Tools:
     def __init__(self, http: httpx.AsyncClient, run: Run):
         self.http = http
         self.run = run
-        self.boxes: dict[str, ToolBox] = {}
+        self.boxes: dict[str, AuditTools] = {}
 
-    def box(self, task_key: str, deliberate: bool) -> ToolBox:
+    def box(self, task_key: str, deliberate: bool) -> AuditTools:
         if task_key not in self.boxes:
 
             async def log(kind: str, payload: dict[str, Any]) -> str:
@@ -292,7 +294,7 @@ class Tools:
                     self.run.reads.append((payload["path"], deliberate))
                 return f"call-{self.run.tool_calls}"
 
-            self.boxes[task_key] = ToolBox(self.http, task_key, 1, log)
+            self.boxes[task_key] = AuditTools(self.http, task_key, 1, log)
         return self.boxes[task_key]
 
     async def get_host(self, host: str) -> dict:
@@ -364,7 +366,7 @@ async def run_baseline(
 async def main(args: argparse.Namespace) -> int:
     from lha.run import start_world
 
-    world = await start_world(args.seed, args.hosts, args.chaos)
+    world = await start_world("audit", args.seed, args.hosts, args.chaos)
     try:
         out = await run_baseline(world.url, args.seed, args.hosts, args.window, args.reread, args.step_budget)
     finally:

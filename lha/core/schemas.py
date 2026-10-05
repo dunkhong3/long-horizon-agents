@@ -9,6 +9,13 @@ from typing import Any
 
 from pydantic import BaseModel
 
+# Fact statuses, the same in every domain.
+OBSERVED = "observed"  # read from a tool response
+INFERRED = "inferred"  # a claim that is not confirmed yet
+VERIFIED = "verified"  # confirmed by reads that agree
+REFUTED = "refuted"  # checked and found wrong
+SUPERSEDED = "superseded"  # replaced by a newer row for the same (subject, key)
+
 
 class Pinned(BaseModel):
     """Always included, never cut."""

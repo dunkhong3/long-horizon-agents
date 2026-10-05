@@ -27,7 +27,9 @@ host-4  └─ cache: 1 replica           ✗ registry says 3 → this is the dr
 report: "cache on host-4 runs 1 replica; the registry expects 3"
 ```
 
-The agents start knowing only `host-1`, `host-2` and `host-3`, and the example is simplified. A real run has 20 hosts, between about 65 and 90 services, 3 decoys (healthy services whose first read is stale, so they look broken until they are read again) and a dead reference, which is a document that names a host that doesn't exist. One host runs 40 services, too many to read in one attempt's context, so its work has to be split, and another is down for the first round of work, so its circuit breaker opens and a later round has to bring it back. The default goal plants one drift 5–6 document hops away from the start (`lha/world/model.py`, lines 101–119), and `--goal all` plants three and only ends once every host has been explored and every service has a verdict. A run takes roughly 250–500 steps at the default fault rate, about 470–530 when finding all drifts, and up to about 660 at a 45% fault rate, and timeouts, 500 errors, empty responses and made-up model output all happen along the way, plus crashes of workers and of the coordinator with `--crashes`, and a crash of every process with `--kill-at`. Every run is scored against the planted answer as PASS or FAIL (`lha/scoring.py`, lines 30–63).
+The agents start knowing only `host-1`, `host-2` and `host-3`, and the example is simplified. A real run has 20 hosts, between about 65 and 90 services, 3 decoys (healthy services whose first read is stale, so they look broken until they are read again) and a dead reference, which is a document that names a host that doesn't exist. One host runs 40 services, too many to read in one attempt's context, so its work has to be split, and another is down for the first round of work, so its circuit breaker opens and a later round has to bring it back. The default goal plants one drift 5–6 document hops away from the start (`lha/domains/audit/world.py`, lines 101–119), and `--goal all` plants three and only ends once every host has been explored and every service has a verdict. A run takes roughly 250–500 steps at the default fault rate, about 470–530 when finding all drifts, and up to about 660 at a 45% fault rate, and timeouts, 500 errors, empty responses and made-up model output all happen along the way, plus crashes of workers and of the coordinator with `--crashes`, and a crash of every process with `--kill-at`. Every run is scored against the planted answer as PASS or FAIL (`lha/core/scoring.py`, lines 31–43).
+
+The audit is one domain, and the core that keeps the run coherent knows nothing about it. A second domain, a research brief, runs on the same core with `--domain research`, where the agents follow citations through a library of about 60 sources to find when some projects launched, and a year only counts once two or more sources agree on it and outnumber every other year, because some sources are outdated ('The research brief' in [docs/design.md](docs/design.md); `lha/domains/research/`).
 
 ## How it is built
 
@@ -46,7 +48,7 @@ The agents start knowing only `host-1`, `host-2` and `host-3`, and the example i
   Processes wake up on Postgres LISTEN/NOTIFY instead of polling.
 ```
 
-The two things this project goes deep on are state and context management, and failure detection and recovery. For context, every attempt at a task gets a fresh `ContextPacket`, which is a small bundle with the goal, the task and only the facts that matter for it, built from the database within a token budget (`lha/context.py`, lines 57–109), and within that attempt the model sees only the packet and the results of its own tool calls, so the raw log never goes into a prompt, and a task whose own work doesn't fit is split into batches. For recovery, tool failures are never silent (`lha/tools.py`, lines 118–147), the tasks of crashed workers are handed out again, a host that keeps failing has its work held back by a circuit breaker, a coordinator that crashes is started again, work that was put off is re-opened when the run stalls, claims are verified before they count, and failed work is retried or rerouted and never passed downstream. Workers never write facts themselves, because the coordinator checks every claimed fact against the raw tool response it cites (`lha/coordinator.py`, lines 263–291), so a made-up number or host is rejected. The whole run can be killed at any point and `--resume` carries on from the database, and no API keys are needed because the agents use deterministic fake models through Pydantic AI's `FunctionModel` (`lha/agents/base.py`, lines 110–145).
+The two things this project goes deep on are state and context management, and failure detection and recovery. For context, every attempt at a task gets a fresh `ContextPacket`, which is a small bundle with the goal, the task and only the facts that matter for it, built from the database within a token budget (`lha/core/context.py`, lines 51–87), and within that attempt the model sees only the packet and the results of its own tool calls, so the raw log never goes into a prompt, and a task whose own work doesn't fit is split into batches. For recovery, tool failures are never silent (`lha/core/tools.py`, lines 112–141), the tasks of crashed workers are handed out again, a host that keeps failing has its work held back by a circuit breaker, a coordinator that crashes is started again, work that was put off is re-opened when the run stalls, claims are verified before they count, and failed work is retried or rerouted and never passed downstream. Workers never write facts themselves, because the coordinator checks every claimed fact against the raw tool response it cites (`lha/domains/audit/rules.py`, lines 44–74), so a made-up number or host is rejected. The whole run can be killed at any point and `--resume` carries on from the database, and no API keys are needed because the agents use deterministic fake models through Pydantic AI's `FunctionModel` (`lha/core/agent.py`, lines 110–145).
 
 We also measured the design against a naive agent whose prompt is its whole history, on the same worlds with the same faults (`lha/baseline.py`, `lha/bench.py`). At 60 hosts the system's prompts average about 330 tokens and never go over its 1600-token limit, while the naive agent's average about 7,300 and grow with every step, so a run sends about 11 times more tokens, and the naive agent names a decoy in every run unless it re-reads a mismatch, and even then, once its history has to fit a 2000-token window, it loses track of its work and runs out of steps in 8 runs out of 10. The numbers and their limits are in 'The benchmark' in [docs/design.md](docs/design.md).
 
@@ -73,7 +75,8 @@ just start --resume                   # ...and resume from Postgres
 just demo                             # a full run, then a crash at step 120 and a resume
 just bench                            # the system against a naive full-history agent (~6 min)
 just scale                            # one big world with more workers and coordinators (~3 min)
-just start --seed 7 --hosts 200 --goal all --step-budget 50000 --coordinators 4 --discovery 8 --analysis 8
+just start --domain research --goal all  # the second domain, a research brief
+just start --seed 7 --hosts 200 --goal all --step-budget 50000 --coordinators 4 --workers 8,8
 ```
 
 Without `just`, the same run is `uv sync && uv run python -m lha.run --seed 42`, but then `.env` is not loaded, so `DATABASE_URL` has to be exported in the shell if it isn't the default. A step is one model call or one tool call, and `--seed` fixes the network, the faults and the injected crashes, so the same seed gives the same faults and the same result. Each run writes `runs/<session>/finding.md` and `score.json`.
@@ -81,9 +84,9 @@ Without `just`, the same run is `uv sync && uv run python -m lha.run --seed 42`,
 ## Sample output
 
 ```
-[supervisor] session <id>: seed 42, 20 hosts, fault rate 0.15, goal 'one', crash rate 0.0
-[supervisor] step  239 | tasks: 42 done, 3 active, 1 failed | hosts found: 14 | drift claims: 0 inferred, 0 verified, 1 refuted
-[supervisor] step  418 | tasks: 90 done, 6 active, 2 failed | hosts found: 16 | drift claims: 2 inferred, 0 verified, 1 refuted
+[supervisor] session <id>: audit, seed 42, size 20, fault rate 0.15, goal 'one', crash rate 0.0, 1 coordinator(s), workers 2+2, LISTEN/NOTIFY
+[supervisor] step  245 | tasks: 42 done, 3 active, 1 failed | hosts found: 14 | drift claims: 0 inferred, 0 verified, 1 refuted
+[supervisor] step  417 | tasks: 83 done, 14 active, 2 failed | hosts found: 16 | drift claims: 2 inferred, 0 verified, 1 refuted
 [coordinator] goal met: a verified drift backed by the registry; cancelled 1 leftover task(s); writing report
 
 # Finding: replica drift
@@ -94,8 +97,8 @@ Without `just`, the same run is `uv sync && uv run python -m lha.run --seed 42`,
   ✓ found the drifted service (oncall)
   ✓ on the right host (host-12)
   ✓ right counts (expected 5, actual 2)
-  ✓ every cited drift fact is verified
+  ✓ every cited fact is verified
 
-steps=469 tool_calls=191 model_calls=278 faults_injected=33 model_errors=9 rejected=3 retries=11 replans=2 splits=1 breaker_opened=1 reopened=0 crashes=0 pointers=38 hosts=19/20 decoys_refuted=3/3 elapsed=9.3s
-verdict=PASS
+steps=476 model_calls=281 tool_calls=195 faults_injected=35 model_errors_injected=9 outputs_rejected=3 retries=11 replans=2 splits=1 breaker_opened=1 reopened=0 crashes_injected=0 pointer_fetches=38 leases_lost=0 repeated_reads=0 hosts_checked=19/20 decoys_refuted=3/3 drifts_planted=1 elapsed=10.8s
+verdict=PASS  (session <id>, files in runs/<id>)
 ```

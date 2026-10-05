@@ -1,7 +1,7 @@
 """The four tables, where Postgres is the only state shared between processes.
 
 These are internal storage definitions (SQLAlchemy Core). The contracts
-between processes live in lha/schemas.
+between processes live in lha/core/schemas.py and each domain's tasks.py.
 """
 
 from sqlalchemy import (
@@ -29,17 +29,17 @@ sessions = Table(
     "sessions",
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("domain", Text, nullable=False),  # 'audit' or 'research'
     Column("seed", Integer, nullable=False),
-    Column("n_hosts", Integer, nullable=False),
+    Column("n_hosts", Integer, nullable=False),  # the size of the world (hosts, or sources)
     Column("fault_rate", Float, nullable=False),
     Column("step_budget", Integer, nullable=False),
-    Column("goal_kind", Text, nullable=False),  # 'one' drift or 'all' drifts
-    Column("n_drifts", Integer, nullable=False),  # how many the world plants
+    Column("goal_kind", Text, nullable=False),  # 'one' or 'all' (one drift or all, one question or all)
     Column("crash_rate", Float, nullable=False),  # injected crashes per attempt
     Column("partitions", Integer, nullable=False),  # coordinators splitting the plan
     Column("wakeups", Text, nullable=False),  # 'notify' (LISTEN/NOTIFY) or 'poll'
     Column("goal", Text, nullable=False),
-    Column("start_hosts", JSONB, nullable=False),
+    Column("start_points", JSONB, nullable=False),  # what the agents start from, e.g. hosts
     Column("status", Text, nullable=False),  # running | succeeded | failed
     Column("report", JSONB),  # the accepted reporter output
     Column("created_at", DateTime(timezone=True), **CREATED_AT),
@@ -72,6 +72,7 @@ tasks = Table(
     Column("parent_task_id", UUID(as_uuid=True)),  # whose result created this task
     Column("type", Text, nullable=False),
     Column("role", Text, nullable=False),
+    Column("resource", Text),  # what it works on (e.g. a host), for the breaker and the partition
     Column("partition", Integer, nullable=False),  # which coordinator decides its results
     Column("input", JSONB, nullable=False),
     Column("scope", JSONB, nullable=False),  # which facts the context builder selects

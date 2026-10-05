@@ -4,22 +4,23 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select, text
 
-import lha.coordinator as coordinator_module
-from lha.context import build_packet
-from lha.coordinator import Coordinator
+import lha.core.coordinator as coordinator_module
+from lha.core.context import build_packet
+from lha.core.coordinator import Coordinator
 from lha.db import crud
 from lha.db.models import tasks
+from lha.domains.audit import AUDIT
+from lha.domains.audit import facts as F
+from lha.domains.audit.rules import everything_checked
+from lha.domains.audit.tasks import DiscoverInput, VerifyInput
 from lha.ids import uuid7
-from lha.schemas import facts as F
-from lha.schemas.tasks import DiscoverInput, VerifyInput
-from tests.conftest import new_session
+from tests.conftest import add_task, new_session
 
 
 async def coordinator(engine, sid, partition=0):
     """A coordinator ready to have its rules called directly, without its loop."""
     coord = Coordinator(engine, sid, partition=partition)
-    async with engine.connect() as conn:
-        coord.session = await crud.get_session(conn, sid)
+    await coord.load()
     return coord
 
 
@@ -32,12 +33,12 @@ async def test_breaker_opens_holds_and_closes(engine):
     sid = await new_session(engine)
     coord = await coordinator(engine, sid)
     async with engine.begin() as conn:
-        await crud.create_task(conn, sid, "discover_host", DiscoverInput(host="host-7"))
-        await crud.create_task(conn, sid, "verify_drift", VerifyInput(service="x", host="host-7"))
+        await add_task(conn, sid, "discover_host", DiscoverInput(host="host-7"))
+        await add_task(conn, sid, "verify_drift", VerifyInput(service="x", host="host-7"))
         for _ in range(3):  # three failed attempts in a row against host-7
             task = await task_row(conn, sid, "discover_host:host-7")
             await coord._retry_or_fail(conn, task, "server_error", "")
-        breaker = await crud.current_fact(conn, sid, F.host_subject("host-7"), F.BREAKER)
+        breaker = await crud.current_fact(conn, sid, "resource:host-7", "breaker")
         assert breaker.value["state"] == "open"
         until = datetime.fromisoformat(breaker.value["open_until"])
 
@@ -49,7 +50,7 @@ async def test_breaker_opens_holds_and_closes(engine):
         assert held.not_before > probe.not_before
 
         await coord._breaker_success(conn, probe)
-        breaker = await crud.current_fact(conn, sid, F.host_subject("host-7"), F.BREAKER)
+        breaker = await crud.current_fact(conn, sid, "resource:host-7", "breaker")
         assert breaker.value == {"state": "closed", "failures": 0, "open_until": None}
         held = await task_row(conn, sid, "verify_drift:x@host-7#1")
         assert held.not_before <= datetime.now(UTC)
@@ -68,7 +69,7 @@ async def test_reopen_gives_put_off_work_one_more_round(engine):
         await crud.upsert_fact(conn, sid, "service:search@host-3", F.REPLICAS, 2, source_task_id=tid)
         await crud.upsert_fact(conn, sid, "registry:search", F.EXPECTED, 2, source_task_id=tid)
 
-        assert await coord._reopen(conn, "test") == 3
+        assert await AUDIT.reopen(coord, conn) == 3
         for key in (
             "discover_host:host-9#3",
             "verify_drift:cache@host-4#4",
@@ -76,7 +77,7 @@ async def test_reopen_gives_put_off_work_one_more_round(engine):
         ):
             assert (await task_row(conn, sid, key)).status == "ready"
         # Those tasks are now active, and their keys exist, so nothing more re-opens.
-        assert await coord._reopen(conn, "test") == 0
+        assert await AUDIT.reopen(coord, conn) == 0
 
 
 async def test_a_discovery_too_big_for_one_attempt_is_split(engine):
@@ -84,7 +85,7 @@ async def test_a_discovery_too_big_for_one_attempt_is_split(engine):
     coord = await coordinator(engine, sid)
     services = [f"s{i}" for i in range(20)]
     async with engine.begin() as conn:
-        await crud.create_task(conn, sid, "discover_host", DiscoverInput(host="host-13"))
+        await add_task(conn, sid, "discover_host", DiscoverInput(host="host-13"))
         task = await task_row(conn, sid, "discover_host:host-13")
         response = {"host": "host-13", "services": services, "documents": ["runbook.md"]}
         await crud.log_event(
@@ -100,7 +101,7 @@ async def test_a_discovery_too_big_for_one_attempt_is_split(engine):
         assert parts[3].input["documents"] == ["runbook.md"]
 
         # A batch may fetch what the too-big attempt already read, by pointer.
-        packet = await build_packet(conn, await crud.get_session(conn, sid), parts[0])
+        packet = await build_packet(conn, AUDIT, await crud.get_session(conn, sid), parts[0])
         assert [(p.tool, p.path) for p in packet.pointers] == [("get_host", "/hosts/host-13")]
 
         # The document turns out to be too big on its own, so it is read a page at a time.
@@ -118,7 +119,7 @@ async def test_a_pointer_copy_counts_only_if_it_matches_its_original(engine):
     sid = await new_session(engine)
     coord = await coordinator(engine, sid)
     async with engine.begin() as conn:
-        await crud.create_task(conn, sid, "discover_host", DiscoverInput(host="host-2"))
+        await add_task(conn, sid, "discover_host", DiscoverInput(host="host-2"))
         task = await task_row(conn, sid, "discover_host:host-2")
         read = {"host": "host-2", "service": "cache", "replicas": 3}
         path = "/hosts/host-2/services/cache"
@@ -135,7 +136,7 @@ async def test_a_pointer_copy_counts_only_if_it_matches_its_original(engine):
 
         true_copy = await crud.log_event(conn, sid, "w", "tool_call", copy(read), task.id, 2)
         forged = await crud.log_event(conn, sid, "w", "tool_call", copy({**read, "replicas": 4}), task.id, 2)
-        cited = await coord._cited_responses(conn, task)
+        cited = await coord.cited_responses(conn, task)
         assert cited[str(true_copy)]["tool"] == "get_service"
         assert str(forged) not in cited
 
@@ -152,7 +153,7 @@ async def test_only_one_coordinator_per_session(engine, monkeypatch):
 
 
 async def test_find_all_is_done_only_when_everything_is_checked(engine):
-    sid = await new_session(engine, goal_kind="all", start_hosts=["host-1"])
+    sid = await new_session(engine, goal_kind="all", start_points=["host-1"])
     coord = await coordinator(engine, sid)
     tid = uuid7()
     async with engine.begin() as conn:
@@ -167,21 +168,21 @@ async def test_find_all_is_done_only_when_everything_is_checked(engine):
         await fact("doc:runbook.md@host-1", F.MENTIONS, ["host-2"])
         await fact("service:cache@host-1", F.REPLICAS, 3)
         await fact("service:cache@host-1", F.VERDICT, "match")
-        assert not await coord._everything_checked(conn, session)  # host-2 not explored
+        assert not await everything_checked(coord, conn, session)  # host-2 not explored
 
         await fact("host:host-2", F.EXISTS, True)
         await fact("host:host-2", F.LISTING, {"services": ["cache", "search"], "documents": []})
         await fact("service:cache@host-2", F.REPLICAS, 1)
         await fact("service:cache@host-2", F.DRIFT, {"expected": 3, "actual": 1}, F.INFERRED)
-        assert not await coord._everything_checked(conn, session)  # the drift is undecided
+        assert not await everything_checked(coord, conn, session)  # the drift is undecided
 
         drift = await crud.current_fact(conn, sid, "service:cache@host-2", F.DRIFT)
         await crud.update_fact(conn, sid, drift.id, status=F.VERIFIED)
-        assert not await coord._everything_checked(conn, session)  # search was never read
+        assert not await everything_checked(coord, conn, session)  # search was never read
 
         # Re-opening reads what is left of host-2.
-        assert await coord._reopen(conn, "test") == 1
+        assert await AUDIT.reopen(coord, conn) == 1
         assert (await task_row(conn, sid, "discover_host:host-2/1of1#3")).input["services"] == ["search"]
         await fact("service:search@host-2", F.REPLICAS, 2)
         await fact("service:search@host-2", F.VERDICT, "match")
-        assert await coord._everything_checked(conn, session)
+        assert await everything_checked(coord, conn, session)

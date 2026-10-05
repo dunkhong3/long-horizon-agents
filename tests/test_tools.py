@@ -3,12 +3,13 @@
 import httpx
 import pytest
 
-from lha.tools import NotFound, ToolBox, ToolFailure
-from lha.world.app import create_app
-from lha.world.model import generate_world
+from lha.core.tools import NotFound, ToolFailure
+from lha.domains.audit.app import create_app
+from lha.domains.audit.tools import AuditTools
+from lha.domains.audit.world import generate_world
 
 
-def toolbox(fault_rate: float, log: list, task_key: str = "discover_host:host-1") -> ToolBox:
+def toolbox(fault_rate: float, log: list, task_key: str = "discover_host:host-1") -> AuditTools:
     app = create_app(generate_world(1, 20), fault_rate)
     http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://world")
 
@@ -16,7 +17,7 @@ def toolbox(fault_rate: float, log: list, task_key: str = "discover_host:host-1"
         log.append(payload)
         return f"event-{len(log)}"
 
-    return ToolBox(http, task_key, 1, record)
+    return AuditTools(http, task_key, 1, record)
 
 
 async def test_successful_call_returns_data_and_event_id():

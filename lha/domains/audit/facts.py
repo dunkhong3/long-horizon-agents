@@ -1,9 +1,11 @@
-"""How facts are named.
+"""How the audit's facts are named.
 
 A fact is one small, typed claim of the form (subject, key) -> value. The
 same (subject, key) counts as 'the same fact', and only one row for it is
-current at a time.
+current at a time. The statuses are the same in every domain.
 """
+
+from lha.core.schemas import INFERRED, OBSERVED, REFUTED, SUPERSEDED, VERIFIED  # noqa: F401
 
 # Fact keys.
 EXISTS = "exists"  # host:<h> -> true / false
@@ -15,14 +17,6 @@ PAGES = "pages"  # doc:<name>@<h> -> how many pages the document has
 EXPECTED = "replicas"  # registry:<s> -> int
 DRIFT = "drift.replicas"  # service:<s>@<h> -> {"expected", "actual"} (a claim)
 VERDICT = "verdict"  # service:<s>@<h> -> "match" after a clean compare
-BREAKER = "breaker"  # host:<h> -> {"state", "failures", "open_until"}
-
-# Fact statuses.
-OBSERVED = "observed"
-INFERRED = "inferred"
-VERIFIED = "verified"
-REFUTED = "refuted"
-SUPERSEDED = "superseded"
 
 
 def host_subject(host: str) -> str:

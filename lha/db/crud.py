@@ -9,17 +9,15 @@ from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel
 from sqlalchemy import func, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from lha.config import LEASE_SECONDS, MAX_ATTEMPTS
+from lha.core.schemas import OBSERVED, SUPERSEDED, VERIFIED
 from lha.db.models import events, facts, sessions, tasks
 from lha.ids import uuid7
-from lha.schemas.facts import OBSERVED, SUPERSEDED, VERIFIED
-from lha.schemas.tasks import ROLE_OF, task_key, task_partition, task_scope
 
 # A 'step' is one model call or one tool call.
 STEP_KINDS = ("model_call", "tool_call")
@@ -76,28 +74,35 @@ async def create_task(
     conn: AsyncConnection,
     session_id: UUID,
     task_type: str,
-    inp: BaseModel,
+    inp: dict[str, Any],
+    *,
+    key: str,
+    role: str,
+    scope: list[str],
+    resource: str | None,
+    partition: int,
     parent_task_id: UUID | None = None,
     delay_seconds: float = 0.0,
-    partitions: int = 1,
 ) -> UUID | None:
     """Create a task unless one with the same task_key already exists.
 
     Returns the new task's id, or None if it already existed (in which case
-    nothing happens). `partitions` is the session's number of coordinators.
+    nothing happens). The domain works out the key, role, scope, resource and
+    partition (see lha.core.domain.create_task).
     """
     stmt = (
         pg_insert(tasks)
         .values(
             id=uuid7(),
             session_id=session_id,
-            task_key=task_key(task_type, inp),
+            task_key=key,
             parent_task_id=parent_task_id,
             type=task_type,
-            role=ROLE_OF[task_type],
-            partition=task_partition(inp, partitions),
-            input=inp.model_dump(),
-            scope=task_scope(inp),
+            role=role,
+            resource=resource,
+            partition=partition,
+            input=inp,
+            scope=scope,
             status="ready",  # tasks are only created once their inputs exist
             attempt=1,
             max_attempts=MAX_ATTEMPTS,

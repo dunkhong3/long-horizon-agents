@@ -1,26 +1,14 @@
-"""Task types, with their inputs, outputs, roles, keys and scopes.
+"""The audit's task types, with their inputs, outputs, keys and scopes.
 
 These Pydantic models are the contract between processes. A worker's result
 must validate against the output model of its task type before the
-coordinator even looks at it.
+coordinator even looks at it. Which role each type belongs to is in
+lha/domains/audit/__init__.py.
 """
-
-import hashlib
-from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from lha.schemas.facts import host_subject, registry_subject, service_subject
-
-TaskType = Literal["discover_host", "compare_service", "verify_drift", "write_report"]
-
-# Each task type belongs to exactly one role; workers only claim their role.
-ROLE_OF: dict[str, str] = {
-    "discover_host": "discovery",
-    "compare_service": "analysis",
-    "verify_drift": "analysis",
-    "write_report": "reporter",
-}
+from lha.domains.audit.facts import DRIFT, VERIFIED, host_subject, registry_subject, service_subject
 
 # --- inputs -----------------------------------------------------------------
 
@@ -54,13 +42,6 @@ class VerifyInput(BaseModel):
 class ReportInput(BaseModel):
     partial: bool = False  # True when the run ended without meeting the goal
 
-
-INPUT_MODELS: dict[str, type[BaseModel]] = {
-    "discover_host": DiscoverInput,
-    "compare_service": CompareInput,
-    "verify_drift": VerifyInput,
-    "write_report": ReportInput,
-}
 
 # --- outputs ----------------------------------------------------------------
 # Every fact a worker reports cites its source, which is the id of the
@@ -114,20 +95,13 @@ class Finding(BaseModel):
     host: str
     expected: int
     actual: int
-    drift_fact_id: str  # the verified drift fact this finding rests on
+    fact_id: str  # the verified drift fact this finding rests on
 
 
 class ReportOutput(BaseModel):
     findings: list[Finding]  # one per verified drift, possibly none
     summary: str  # markdown
 
-
-OUTPUT_MODELS: dict[str, type[BaseModel]] = {
-    "discover_host": DiscoverOutput,
-    "compare_service": CompareOutput,
-    "verify_drift": VerifyOutput,
-    "write_report": ReportOutput,
-}
 
 # --- keys and scopes ----------------------------------------------------------
 
@@ -160,8 +134,8 @@ def task_key(task_type: str, inp: BaseModel) -> str:
 def task_scope(inp: BaseModel) -> list[str]:
     """Which facts the context builder selects for this task.
 
-    Entries are exact subjects, '*@<host>' for everything on a host, or
-    'verified_drifts' for the reporter.
+    Entries are exact subjects, '*@<host>' for everything on a host, or for
+    the reporter every verified drift (see lha/core/context.py).
     """
     if isinstance(inp, DiscoverInput) and inp.services is not None:
         # A batch only needs its own services, which leaves room in its
@@ -172,19 +146,5 @@ def task_scope(inp: BaseModel) -> list[str]:
     if isinstance(inp, (CompareInput, VerifyInput)):
         return [service_subject(inp.service, inp.host), registry_subject(inp.service)]
     if isinstance(inp, ReportInput):
-        return ["verified_drifts"]
+        return [f"key:{DRIFT}={VERIFIED}"]
     raise TypeError(f"unknown input {inp!r}")
-
-
-def task_partition(inp: BaseModel, partitions: int) -> int:
-    """Which coordinator decides this task's results, out of `partitions`.
-
-    Tasks are split by host, with a stable hash so every process agrees, which
-    keeps every fact about a host (and its services and documents) with one
-    coordinator. Tasks without a host, which is only the report, go to the
-    leader, partition 0.
-    """
-    host = getattr(inp, "host", None)
-    if partitions <= 1 or host is None:
-        return 0
-    return int.from_bytes(hashlib.sha256(host.encode()).digest()[:4], "big") % partitions

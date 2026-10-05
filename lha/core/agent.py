@@ -24,10 +24,10 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from lha.config import CONTEXT_WINDOW_TOKENS, MODEL_ERROR_RATE, OUTPUT_RESERVE_TOKENS
-from lha.context import ContextOverflow, estimate_tokens
+from lha.core.context import ContextOverflow, estimate_tokens
+from lha.core.schemas import ContextPacket
+from lha.core.tools import ToolBox
 from lha.faults import roll
-from lha.schemas.context import ContextPacket
-from lha.tools import ToolBox
 
 
 @dataclass

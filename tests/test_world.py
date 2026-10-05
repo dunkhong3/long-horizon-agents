@@ -1,7 +1,7 @@
 """The mock world is fully determined by its seed."""
 
+from lha.domains.audit.world import START_HOSTS, WIDE_SERVICES, generate_world
 from lha.faults import pick_fault, roll
-from lha.world.model import START_HOSTS, WIDE_SERVICES, generate_world
 
 
 def test_same_seed_same_world():

@@ -5,7 +5,7 @@ import json
 from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 
 from lha.baseline import Next, policy, read_view, run_baseline, visible
-from lha.context import estimate_tokens
+from lha.core.context import estimate_tokens
 from lha.run import start_world
 
 
@@ -49,7 +49,7 @@ def test_forgetting_the_registry_means_reading_it_again():
 
 
 async def test_full_baseline_runs():
-    world = await start_world(42, 20, 0.15)
+    world = await start_world("audit", 42, 20, 0.15)
     try:
         naive = await run_baseline(world.url, 42, 20, window=0, reread=False, step_budget=3000)
         careful = await run_baseline(world.url, 42, 20, window=0, reread=True, step_budget=3000)

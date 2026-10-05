@@ -1,4 +1,4 @@
-"""HTTP tools the agents use to read the mock network.
+"""The tools agents use to read their mock world over HTTP, which each domain extends.
 
 Every call is logged as a `tool_call` event (a step), success or not, with
 the raw response, so facts can cite the exact event they came from.
@@ -49,7 +49,12 @@ class NotFound(ToolFailure):
 
 
 class ToolBox:
-    """The tools of one task attempt, which numbers its calls 0, 1, 2 and so on."""
+    """The tools of one task attempt, which numbers its calls 0, 1, 2 and so on.
+
+    A domain subclasses it with one method per tool, each of which calls
+    `_call` with the tool's name, its path and the fields a valid response
+    must have (lha/domains/audit/tools.py).
+    """
 
     def __init__(
         self,
@@ -65,17 +70,6 @@ class ToolBox:
         self.log = log
         self.load = load
         self.call_no = 0
-
-    async def get_host(self, host: str) -> dict[str, Any]:
-        return await self._call("get_host", f"/hosts/{host}", ("host", "services", "documents"))
-
-    async def get_service(self, host: str, service: str) -> dict[str, Any]:
-        path = f"/hosts/{host}/services/{service}"
-        return await self._call("get_service", path, ("host", "service", "replicas"))
-
-    async def fetch_document(self, host: str, name: str, page: int = 0) -> dict[str, Any]:
-        path = f"/hosts/{host}/documents/{name}?page={page}"
-        return await self._call("fetch_document", path, ("host", "name", "page", "pages", "content"))
 
     async def fetch_pointer(self, event_id: str) -> dict[str, Any]:
         """Fetch an earlier attempt's raw output by its pointer, instead of calling the network.
