@@ -40,3 +40,7 @@ demo:
     uv run python -m lha.run --seed 42
     -uv run python -m lha.run --seed 7 --kill-at 120
     uv run python -m lha.run --resume
+
+# the system against the naive full-history baseline
+bench *args:
+    uv run python -m lha.bench {{args}}

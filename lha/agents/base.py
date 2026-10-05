@@ -24,6 +24,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from lha.config import MODEL_ERROR_RATE
+from lha.context import estimate_tokens
 from lha.faults import roll
 from lha.schemas.context import ContextPacket
 from lha.tools import ToolBox
@@ -79,6 +80,26 @@ def tool_results(messages: list[ModelMessage]) -> list[tuple[str, Any]]:
     ]
 
 
+def prompt_tokens(messages: list[ModelMessage]) -> int:
+    """The estimated size of everything the model is shown in this call.
+
+    It counts the content of every part (prompts, tool calls and tool
+    results) with the same estimate the context builder uses, so the numbers
+    for the system and for the naive baseline can be compared directly.
+    """
+    return parts_tokens([part for msg in messages for part in msg.parts])
+
+
+def parts_tokens(parts: list[Any]) -> int:
+    return sum(estimate_tokens(part_content(part)) for part in parts)
+
+
+def part_content(part: Any) -> Any:
+    if isinstance(part, ToolCallPart):
+        return [part.tool_name, part.args]
+    return getattr(part, "content", "")
+
+
 def scripted_model(ctx: AgentContext, policy: Policy, fabricate: Fabricate) -> FunctionModel:
     """Wrap a policy as a Pydantic AI model, with seeded 'model errors'.
 
@@ -105,6 +126,7 @@ def scripted_model(ctx: AgentContext, policy: Policy, fabricate: Fabricate) -> F
         else:
             part = ToolCallPart(decision.tool, decision.args)
             summary = {"tool": decision.tool, "args": decision.args}
+        summary["prompt_tokens"] = prompt_tokens(messages)
         await ctx.log("model_call", {**summary, "corrupted": corrupted})
         return ModelResponse(parts=[part])
 

@@ -25,6 +25,7 @@ just fmt       # auto-fix
 just test      # pytest (needs Postgres)
 just start     # run the system
 just demo      # full run + crash at step 120 + resume
+just bench     # the system against a naive full-history baseline
 ```
 
 Run `just fmt && just check && just test` before every commit. In the cloud container there is no Docker daemon, so use the system Postgres, which may need starting again after the container restarts.

@@ -44,23 +44,54 @@ GOAL = (
 )
 
 
+class WorldProcess:
+    """The mock network running as its own process, on a free local port."""
+
+    def __init__(self, proc: asyncio.subprocess.Process, url: str):
+        self.proc = proc
+        self.url = url
+
+    async def stop(self) -> None:
+        if self.proc.returncode is None:
+            self.proc.terminate()
+        try:
+            await asyncio.wait_for(self.proc.wait(), timeout=5)
+        except TimeoutError:
+            self.proc.kill()
+
+
+async def start_world(seed: int, n_hosts: int, fault_rate: float) -> WorldProcess:
+    port = _free_port()
+    proc = await _spawn(
+        "lha.world", "--seed", str(seed), "--hosts", str(n_hosts),
+        "--fault-rate", str(fault_rate), "--port", str(port),
+    )  # fmt: skip
+    url = f"http://127.0.0.1:{port}"
+    async with httpx.AsyncClient() as client:
+        for _ in range(100):
+            try:
+                if (await client.get(f"{url}/health")).status_code == 200:
+                    return WorldProcess(proc, url)
+            except httpx.HTTPError:
+                pass
+            await asyncio.sleep(0.1)
+    proc.kill()
+    raise RuntimeError("the mock network did not start")
+
+
 class Supervisor:
     def __init__(self, session_id: UUID, seed: int, n_hosts: int, fault_rate: float):
         self.session_id = session_id
         self.seed = seed
         self.n_hosts = n_hosts
         self.fault_rate = fault_rate
-        self.port = _free_port()
-        self.world_url = f"http://127.0.0.1:{self.port}"
         self.world: asyncio.subprocess.Process | None = None
+        self.world_url = ""
         self.workers: dict[str, tuple[str, asyncio.subprocess.Process]] = {}  # name -> (role, proc)
 
     async def start(self) -> None:
-        self.world = await _spawn(
-            "lha.world", "--seed", str(self.seed), "--hosts", str(self.n_hosts),
-            "--fault-rate", str(self.fault_rate), "--port", str(self.port),
-        )  # fmt: skip
-        await self._wait_for_world()
+        world = await start_world(self.seed, self.n_hosts, self.fault_rate)
+        self.world, self.world_url = world.proc, world.url
         for role, count in WORKERS.items():
             for i in range(1, count + 1):
                 await self._start_worker(role, f"{role}-{i}")
@@ -79,17 +110,6 @@ class Supervisor:
             if proc.returncode is not None:
                 print(f"[supervisor] {name} exited ({proc.returncode}); restarting it")
                 await self._start_worker(role, name)
-
-    async def _wait_for_world(self) -> None:
-        async with httpx.AsyncClient() as client:
-            for _ in range(100):
-                try:
-                    if (await client.get(f"{self.world_url}/health")).status_code == 200:
-                        return
-                except httpx.HTTPError:
-                    pass
-                await asyncio.sleep(0.1)
-        raise RuntimeError("the mock network did not start")
 
     def kill_all(self) -> None:
         """SIGKILL every child, which is the harshest crash because nothing gets to clean up."""

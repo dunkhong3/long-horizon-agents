@@ -34,3 +34,5 @@ jobs:
         run: uv run python -m lha.run --seed 42 --quiet
       - name: Full run, heavy faults
         run: uv run python -m lha.run --seed 7 --chaos 0.3 --quiet
+      - name: Benchmark, one seed
+        run: uv run python -m lha.bench --seeds 1 --hosts 20
