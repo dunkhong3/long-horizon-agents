@@ -6,7 +6,7 @@ breaker, stall detection and the supervisor) knows nothing about networks or
 documents. A domain supplies the rest, which is its mock world, its task
 types with their schemas, roles and agents, its tools, and the rules the
 coordinator follows for its results. Two domains live in lha/domains, the
-replica audit and the research brief, and they share every line of the core.
+replica audit and verified research, and they share every line of the core.
 """
 
 import hashlib
@@ -69,6 +69,9 @@ class Domain:
     default_size: int  # the size of the world when --size isn't given
     goals: dict[str, str]  # goal kind -> goal text, with {start} for the starting points
     done: dict[str, str]  # goal kind -> what the coordinator says when the goal is met
+    # Whether it can also run on the real web, with a question of its own
+    # instead of a mock world, which needs a real model (see --question).
+    real_web: bool = False
 
     # --- the world ----------------------------------------------------------
 
@@ -79,8 +82,15 @@ class Domain:
         raise NotImplementedError
 
     def tools(
-        self, http: httpx.AsyncClient, task_key: str, attempt: int, log: EventLogger, load: PointerLoader
+        self,
+        http: httpx.AsyncClient,
+        task_key: str,
+        attempt: int,
+        log: EventLogger,
+        load: PointerLoader,
+        world: str = "mock",
     ) -> ToolBox:
+        """The tools of one attempt, on the mock world or, for world 'web', on the real web."""
         return ToolBox(http, task_key, attempt, log, load)
 
     # --- tasks ----------------------------------------------------------------
@@ -93,7 +103,7 @@ class Domain:
         """Anything else the goal text names, besides the starting points."""
         return {}
 
-    def start_tasks(self, world: Any) -> list[tuple[str, BaseModel]]:
+    def start_tasks(self, world: Any, goal: str) -> list[tuple[str, BaseModel]]:
         raise NotImplementedError
 
     def task_key(self, task_type: str, inp: BaseModel) -> str:

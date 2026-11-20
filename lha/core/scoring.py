@@ -32,7 +32,11 @@ async def score_session(engine: AsyncEngine, session_id: UUID) -> Score:
     async with engine.connect() as conn:
         session = await crud.get_session(conn, session_id)
         domain = get_domain(session.domain)
-        world = domain.make_world(session.seed, session.n_hosts, session.goal_kind)
+        world = (
+            domain.make_world(session.seed, session.n_hosts, session.goal_kind)
+            if session.world == "mock"
+            else None
+        )
         findings = (session.report or {}).get("findings", [])
         cited = [await crud.get_fact(conn, UUID(f["fact_id"])) for f in findings]
         verified = bool(cited) and all(f is not None and f.status == VERIFIED for f in cited)

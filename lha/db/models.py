@@ -41,6 +41,7 @@ sessions = Table(
     Column("model", Text, nullable=False, server_default="fake"),  # 'fake' or a Pydantic AI model name
     Column("context_window", Integer, nullable=False, server_default="2000"),  # tokens per model call
     Column("budget_usd", Float),  # what real model calls may cost in all, or no limit
+    Column("world", Text, nullable=False, server_default="mock"),  # 'mock', or 'web' for the real web
     Column("goal", Text, nullable=False),
     Column("start_points", JSONB, nullable=False),  # what the agents start from, e.g. hosts
     Column("status", Text, nullable=False),  # running | succeeded | failed

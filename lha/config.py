@@ -12,7 +12,7 @@ MAX_ROUNDS = 2  # discover_host and compare_service
 MAX_VERIFY_ROUNDS = 3  # verify_drift
 NEW_ROUND_DELAY_SECONDS = 1.0  # 'try again later, after other work'
 
-# The circuit breaker per resource (a host in the audit, a source in the research brief).
+# The circuit breaker per resource (a host in the audit, a site in research).
 BREAKER_THRESHOLD = 3  # failed network attempts in a row against one resource
 BREAKER_COOLDOWN_SECONDS = 3.0
 
@@ -52,6 +52,8 @@ FALLBACK_PRICE_PER_MILLION = (15.0, 75.0)
 # Runs.
 DEFAULT_HOSTS = 20
 DEFAULT_STEP_BUDGET = 3000
+MAX_SECONDS = 600  # the time limit of a run on the fake model, unless --max-seconds says otherwise
+REAL_MAX_SECONDS = 3 * 3600  # the same for a real model, whose money budget usually ends it first
 POLL_SECONDS = 0.05  # how often to look for work when polling (--poll)
 IDLE_MAX_SECONDS = 1.0  # the longest a worker waits for a notification before looking anyway
 COORDINATOR_IDLE_SECONDS = 0.5  # the same for a coordinator, which also sweeps leases

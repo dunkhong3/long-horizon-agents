@@ -21,6 +21,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    NativeToolReturnPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -68,6 +69,7 @@ class AgentContext:
     model: str = FAKE  # 'fake', or any Pydantic AI model name (see --model)
     instructions: str = ""  # the task type's system prompt
     window: int = CONTEXT_WINDOW_TOKENS  # tokens one model call may use, answer included
+    world: str = "mock"  # 'mock', or 'web' for the real web
 
 
 @dataclass
@@ -180,6 +182,11 @@ class StepModel(WrapperModel):
         else:
             summary = {"text": True}  # no tool call and no answer, which fails the attempt
         summary["prompt_tokens"] = tokens
+        for part in response.parts:
+            if isinstance(part, NativeToolReturnPart):
+                # A tool the provider ran itself, such as its web search, is
+                # logged like any tool call, so a result can cite what it found.
+                await self.ctx.log("tool_call", native_call(part))
         if self.fabricate is None:  # a real model, whose calls cost money
             usage = response.usage
             summary["usage"] = {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens}
@@ -195,6 +202,26 @@ class StepModel(WrapperModel):
             fake = self.fabricate(output)
             return (fake, "fabricated") if fake else (_malformed(output), "malformed")
         return output, None
+
+
+def native_call(part: NativeToolReturnPart) -> dict[str, Any]:
+    """A provider's own tool call as a tool_call event, where a search keeps the
+    URL and title of every page it found, wherever the provider put them."""
+    found: list[dict[str, str]] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if isinstance(node.get("url"), str):
+                found.append({"url": node["url"], "title": str(node.get("title") or "")})
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(part.content)
+    failed = isinstance(part.content, dict) and "error_code" in part.content
+    return {"tool": part.tool_name, "path": "native", "ok": not failed, "response": {"results": found}}
 
 
 def scripted_model(policy: Policy) -> FunctionModel:
@@ -255,6 +282,7 @@ async def run_agent(
     policy: Policy,
     fabricate: Fabricate,
     tools: list[Callable[..., Awaitable[Any]]] = (),
+    capabilities: list[Any] = (),
 ) -> BaseModel:
     """Run one attempt, which is the agent loop until it gives a final answer.
 
@@ -267,6 +295,7 @@ async def run_agent(
         instructions=ctx.instructions or None,
         retries=0,  # an invalid output fails the attempt, and the coordinator retries it
         tools=list(tools),
+        capabilities=list(capabilities) or None,
     )
     result = await agent.run(ctx.packet.model_dump_json())
     return result.output

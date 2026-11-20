@@ -5,7 +5,8 @@
     python -m lha.run --seed 42 --goal all      # find every drift, not just one
     python -m lha.run --seed 42 --crashes 0.05  # crash workers and the coordinator
     python -m lha.run --seed 42 --hosts 200 --coordinators 4 --workers 16,16
-    python -m lha.run --domain research --seed 42   # the research brief
+    python -m lha.run --domain research --seed 42   # verified research on the mock web
+    python -m lha.run --question "..."            # verified research on the real web (a real model)
     python -m lha.run --seed 42 --model anthropic:claude-sonnet-5-5  # a real model, opt-in
     python -m lha.run --seed 42 --kill-at 120   # crash everything after step 120
     python -m lha.run --resume [SESSION]        # continue an unfinished run (default: latest)
@@ -36,7 +37,9 @@ from lha.config import (
     DEFAULT_BUDGET_USD,
     DEFAULT_FAULT_RATE,
     DEFAULT_STEP_BUDGET,
+    MAX_SECONDS,
     REAL_CONTEXT_WINDOW_TOKENS,
+    REAL_MAX_SECONDS,
 )
 from lha.core.agent import AUTO, FAKE, resolve_model
 from lha.core.coordinator import progress_line
@@ -106,7 +109,8 @@ class Supervisor:
 
     async def start(self) -> None:
         s = self.session
-        self.world = await start_world(s.domain, s.seed, s.n_hosts, s.fault_rate, s.goal_kind)
+        if s.world == "mock":  # on the real web the tools reach the pages themselves
+            self.world = await start_world(s.domain, s.seed, s.n_hosts, s.fault_rate, s.goal_kind)
         for partition in range(s.partitions):
             await self._start_coordinator(partition)
         for role, count in self.worker_counts.items():
@@ -122,7 +126,7 @@ class Supervisor:
     async def _start_worker(self, role: str, name: str) -> None:
         proc = await _spawn(
             "lha.core.worker", "--session", str(self.sid), "--role", role,
-            "--name", name, "--world", self.world.url,
+            "--name", name, "--world", self.world.url if self.world else "",
         )  # fmt: skip
         self.workers[name] = (role, proc)
 
@@ -198,9 +202,9 @@ class Supervisor:
         """Stop every process. With a grace period, the processes get that long
         to notice the session is over and exit on their own first (workers log
         their claim counts on the way out)."""
-        running = [p.wait() for p in self._procs(world=False) if p.returncode is None]
+        running = [p for p in self._procs(world=False) if p.returncode is None]
         if grace and running:
-            await asyncio.wait([asyncio.ensure_future(w) for w in running], timeout=grace)
+            await asyncio.wait([asyncio.ensure_future(p.wait()) for p in running], timeout=grace)
         for proc in self._procs():
             if proc.returncode is None:
                 proc.terminate()
@@ -237,8 +241,9 @@ def _free_port() -> int:
 async def create_session(engine, args: argparse.Namespace) -> UUID:
     sid = uuid7()
     domain = get_domain(args.domain)
-    world = domain.make_world(args.seed, args.hosts, args.goal)
+    world = None if args.question else domain.make_world(args.seed, args.hosts, args.goal)
     start = domain.start(world)
+    goal = args.question or domain.goals[args.goal].format(start=", ".join(start), **domain.goal_args(world))
     async with engine.begin() as conn:
         await conn.execute(
             sessions.insert().values(
@@ -255,13 +260,14 @@ async def create_session(engine, args: argparse.Namespace) -> UUID:
                 model=args.model,
                 context_window=args.window,
                 budget_usd=args.budget,
-                goal=domain.goals[args.goal].format(start=", ".join(start), **domain.goal_args(world)),
+                world="web" if args.question else "mock",
+                goal=goal,
                 start_points=start,
                 status="running",
             )
         )
         await crud.log_event(conn, sid, "supervisor", "session_started", {"seed": args.seed})
-        for task_type, inp in domain.start_tasks(world):
+        for task_type, inp in domain.start_tasks(world, goal):
             await create_task(conn, sid, domain, task_type, inp, partitions=args.coordinators)
     return sid
 
@@ -349,6 +355,9 @@ async def main(args: argparse.Namespace) -> int:
         n = await release_leases(engine, sid)
         print(f"[supervisor] resuming session {sid} (seed {session.seed}); released {n} lease(s)")
     else:
+        if problem := question_problem(args):
+            print(f"[supervisor] {problem}")
+            return 2
         if problem := model_problem(args.model):
             print(f"[supervisor] cannot use the model {args.model!r}: {problem}")
             return 2
@@ -362,6 +371,8 @@ async def main(args: argparse.Namespace) -> int:
             f"workers {'+'.join(map(str, args.workers))}, {'polling' if args.poll else 'LISTEN/NOTIFY'}, "
             f"model {args.model}" + (f", budget ${args.budget:.2f}" if args.budget is not None else "")
         )
+        if args.question:
+            print(f"[supervisor] researching on the real web: {args.question}")
 
     roles = get_domain(session.domain).roles
     workers = {
@@ -394,8 +405,24 @@ async def main(args: argparse.Namespace) -> int:
     return 0 if score.passed else 1
 
 
+def question_problem(args: argparse.Namespace) -> str | None:
+    """Why a run with --question can't start, or None when it can."""
+    if not args.question:
+        return None
+    if not get_domain(args.domain).real_web:
+        return f"{args.domain} only runs in its mock world, so it takes no --question"
+    if args.model == FAKE:
+        return (
+            "the fake model can only read the mock web, so --question needs a real model "
+            "(set ANTHROPIC_API_KEY, or pass --model with a real model's name)"
+        )
+    return None
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = _parser().parse_args(argv)
+    if args.domain is None:
+        args.domain = "research" if args.question else "audit"
     if args.hosts is None:
         args.hosts = DOMAINS[args.domain].default_size
     args.model = resolve_model(args.model)
@@ -404,12 +431,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.window = REAL_CONTEXT_WINDOW_TOKENS if real else CONTEXT_WINDOW_TOKENS
     if args.budget is None and real:
         args.budget = DEFAULT_BUDGET_USD
+    if args.max_seconds is None:
+        args.max_seconds = REAL_MAX_SECONDS if real else MAX_SECONDS
     return args
 
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--domain", choices=sorted(DOMAINS), default="audit", help="what the agents work on")
+    p.add_argument("--domain", choices=sorted(DOMAINS), help="what the agents work on (default: audit)")
+    p.add_argument(
+        "--question",
+        help="research this question on the real web, with a real model (the domain is then research)",
+    )
     p.add_argument("--seed", type=int, default=42, help="fixes the world and the faults")
     p.add_argument(
         "--hosts", "--size", type=int, help="size of the world (hosts, sources), with a default per domain"
@@ -433,7 +466,9 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--window", type=int, help="tokens per model call (default: 2000 fake, 32000 real)")
     p.add_argument("--budget", type=float, help="the most a real model may spend, in US dollars (default 5)")
     p.add_argument("--step-budget", type=int, default=DEFAULT_STEP_BUDGET)
-    p.add_argument("--max-seconds", type=float, default=600, help="safety limit on wall-clock time")
+    p.add_argument(
+        "--max-seconds", type=float, help="safety limit on wall-clock time (default: 600 fake, 3 hours real)"
+    )
     p.add_argument("--kill-at", type=int, help="crash the whole run after this many steps")
     p.add_argument(
         "--resume", nargs="?", const="latest", metavar="SESSION",

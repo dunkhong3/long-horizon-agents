@@ -181,11 +181,14 @@ class Worker:
                 task_type=task.type,
                 attempt=task.attempt,
                 packet=packet,
-                tools=self.domain.tools(self.http, task.task_key, task.attempt, log, load),
+                tools=self.domain.tools(
+                    self.http, task.task_key, task.attempt, log, load, world=self.session.world
+                ),
                 log=log,
                 model=self.session.model,
                 instructions=task_type.instructions,
                 window=self.session.context_window,
+                world=self.session.world,
             )
             output = await task_type.agent(ctx)
             return output.model_dump(mode="json")
@@ -222,7 +225,7 @@ if __name__ == "__main__":
     parser.add_argument("--session", required=True)
     parser.add_argument("--role", required=True, help="which tasks to claim, such as discovery")
     parser.add_argument("--name", required=True)
-    parser.add_argument("--world", required=True, help="base URL of the mock network")
+    parser.add_argument("--world", default="", help="base URL of the mock world, or nothing on the real web")
     try:
         asyncio.run(main(parser.parse_args()))
     except KeyboardInterrupt:

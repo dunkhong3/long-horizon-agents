@@ -61,7 +61,7 @@ from lha.faults import roll
 
 ACTOR = "coordinator"
 ACTIVE = ("ready", "leased", "submitted")
-PERMANENT_ERRORS = ("not_found", "context_overflow")
+PERMANENT_ERRORS = ("not_found", "unreadable", "context_overflow")
 # Failures that say something about a resource, which feed its circuit breaker.
 NETWORK_ERRORS = ("timeout", "server_error", "rate_limited", "empty_response", "malformed_response",
                   "connection_error")  # fmt: skip

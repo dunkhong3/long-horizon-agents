@@ -50,11 +50,11 @@ def test_polling_instead_of_notify_passes():
     assert "verdict=PASS" in result.stdout
 
 
-def test_research_brief_passes():
-    """The second domain, on the same core."""
-    result = run("--domain", "research", "--seed", "108", "--goal", "all", "--chaos", "0.3")
+def test_research_passes():
+    """Verified research on the mock web, the second domain on the same core."""
+    result = run("--domain", "research", "--seed", "4", "--goal", "all", "--chaos", "0.3")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "answered all 6 project(s) asked about" in result.stdout
+    assert "answered all 8 value(s) asked about" in result.stdout
 
 
 def test_crash_then_resume_passes():

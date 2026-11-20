@@ -1,20 +1,25 @@
-"""The research library as a mock HTTP service, on the shared mock app with its seeded faults."""
+"""The mock web as an HTTP service, on the shared mock app with its seeded faults."""
 
 from fastapi import FastAPI, HTTPException
 
 from lha.core.world import mock_app
-from lha.domains.research.world import Library
+from lha.domains.research.world import MockWeb
 
 
-def create_app(library: Library, fault_rate: float) -> FastAPI:
-    app = mock_app("mock library", library.seed, fault_rate)
+def create_app(web: MockWeb, fault_rate: float) -> FastAPI:
+    app = mock_app("mock web", web.seed, fault_rate)
 
-    @app.get("/sources/{source}")
-    async def get_source(source: str) -> dict:
-        # There is no 'list all sources', so sources are only found through citations.
-        text = library.texts.get(source)
-        if text is None:
-            raise HTTPException(404, f"no such source: {source}")
-        return {"source": source, "text": text}
+    @app.get("/search")
+    async def search(q: str) -> dict:
+        # Search finds only shallow pages, so deeper ones are found through links.
+        return {"query": q, "results": web.search(q)}
+
+    @app.get("/page")
+    async def page(url: str, page: int = 0) -> dict:
+        found = web.page_text(url, page)
+        if found is None or not 0 <= page < len(found[1]):
+            raise HTTPException(404, f"no such page: {url} ({page})")
+        doc, pages = found
+        return {"url": url, "title": doc.title, "page": page, "pages": len(pages), "text": pages[page]}
 
     return app

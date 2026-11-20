@@ -85,13 +85,13 @@ class AuditDomain(Domain):
     def create_app(self, world: World, fault_rate: float) -> FastAPI:
         return create_app(world, fault_rate)
 
-    def tools(self, http, task_key, attempt, log, load) -> AuditTools:
+    def tools(self, http, task_key, attempt, log, load, world="mock") -> AuditTools:
         return AuditTools(http, task_key, attempt, log, load)
 
     def start(self, world: World) -> list[str]:
         return list(START_HOSTS)
 
-    def start_tasks(self, world: World) -> list[tuple[str, BaseModel]]:
+    def start_tasks(self, world: World, goal: str) -> list[tuple[str, BaseModel]]:
         return [("discover_host", DiscoverInput(host=host)) for host in START_HOSTS]
 
     def task_key(self, task_type: str, inp: BaseModel) -> str:

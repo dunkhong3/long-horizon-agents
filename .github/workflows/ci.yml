@@ -39,7 +39,7 @@ jobs:
         run: uv run python -m lha.run --seed 7 --chaos 0.3 --quiet
       - name: Benchmark, one seed
         run: uv run python -m lha.bench --seeds 1 --hosts 20
-      - name: Research brief, the second domain
+      - name: Verified research on the mock web, the second domain
         run: uv run python -m lha.run --domain research --seed 42 --goal all --quiet
 
   compose:
