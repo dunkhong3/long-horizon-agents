@@ -25,9 +25,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from lha.config import (
     CONTEXT_WINDOW_TOKENS,
     MAX_POINTERS,
-    OUTPUT_RESERVE_TOKENS,
+    OUTPUT_RESERVE_SHARE,
     RECENT_EVENTS,
-    WORK_RESERVE_TOKENS,
+    WORK_RESERVE_SHARE,
 )
 from lha.db import crud
 from lha.db.models import events, facts
@@ -38,7 +38,17 @@ from lha.core.schemas import SUPERSEDED, ContextPacket, EventView, FactView, Pin
 
 
 class ContextOverflow(Exception):
-    """The pinned layer alone doesn't fit, so the task is too big (a planning bug)."""
+    """The pinned layer and the instructions alone don't fit, so the task is too big."""
+
+
+def call_limit(window: int) -> int:
+    """The most one model call may be shown, which leaves room for its answer."""
+    return window - int(window * OUTPUT_RESERVE_SHARE)
+
+
+def packet_budget(window: int) -> int:
+    """What a packet may hold, which also leaves room for the attempt's own work."""
+    return call_limit(window) - int(window * WORK_RESERVE_SHARE)
 
 
 def estimate_tokens(obj: Any) -> int:
@@ -54,9 +64,13 @@ def pack(
     recent_items: list[EventView],
     pointer_items: list[PointerView],
     window: int = CONTEXT_WINDOW_TOKENS,
-    reserve: int = OUTPUT_RESERVE_TOKENS + WORK_RESERVE_TOKENS,
+    reserve: int | None = None,
+    instructions: str = "",
 ) -> ContextPacket:
-    budget = window - reserve  # leave room for the attempt's work and the model's answer
+    # Leave room for the attempt's work and the model's answer, and for the
+    # task type's instructions, which are shown with every packet.
+    budget = packet_budget(window) if reserve is None else window - reserve
+    budget -= estimate_tokens(instructions) if instructions else 0
     used = estimate_tokens(pinned)
     if used > budget:
         # Truncating pinned would silently change what the task is.
@@ -100,6 +114,8 @@ async def build_packet(conn: AsyncConnection, domain: "Domain", session: Row, ta
         await _select_facts(conn, domain, session.id, task.scope),
         await _recent_events(conn, session.id, task.id),
         await _pointers(conn, domain, session.id, task),
+        window=session.context_window,
+        instructions=domain.task_types[task.type].instructions,
     )
 
 

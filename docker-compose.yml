@@ -21,6 +21,10 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+asyncpg://lha:lha@db:5432/lha
+      # A real model is used only when this key is set where compose runs
+      # (see --model), and the fake one otherwise.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LHA_MODEL: ${LHA_MODEL:-auto}
     volumes:
       - ./runs:/app/runs  # finding.md and score.json of every run
     depends_on:

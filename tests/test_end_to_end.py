@@ -7,7 +7,7 @@ import sys
 
 def run(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "lha.run", "--quiet", *args],
+        [sys.executable, "-m", "lha.run", "--quiet", "--model", "fake", *args],
         capture_output=True, text=True, timeout=300,
     )  # fmt: skip
 

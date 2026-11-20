@@ -18,6 +18,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -30,6 +31,12 @@ def config(conn: Connection) -> Config:
     cfg.set_main_option("script_location", str(Path(__file__).parent / "migrations"))
     cfg.attributes["connection"] = conn
     return cfg
+
+
+def next_revision_id(conn: Connection) -> str:
+    """Revisions are numbered in order, 0001, 0002 and so on, so their files sort by age."""
+    script = ScriptDirectory.from_config(config(conn))
+    return f"{len(list(script.walk_revisions())) + 1:04d}"
 
 
 def _upgrade(conn: Connection) -> None:
@@ -58,7 +65,9 @@ async def main(args: argparse.Namespace) -> None:
             async with engine.begin() as conn:
                 if args.action == "revision":
                     await conn.run_sync(
-                        lambda c: command.revision(config(c), args.message, autogenerate=True)
+                        lambda c: command.revision(
+                            config(c), args.message, autogenerate=True, rev_id=next_revision_id(c)
+                        )
                     )
                 else:
                     await conn.run_sync(lambda c: command.check(config(c)))
@@ -69,5 +78,7 @@ async def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("action", nargs="?", choices=["upgrade", "revision", "check"], default="upgrade")
-    p.add_argument("message", nargs="?", default="change the schema")
-    asyncio.run(main(p.parse_args()))
+    p.add_argument("message", nargs="*", help="what the new revision changes")
+    args = p.parse_args()
+    args.message = " ".join(args.message) or "change the schema"
+    asyncio.run(main(args))

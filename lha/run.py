@@ -6,6 +6,7 @@
     python -m lha.run --seed 42 --crashes 0.05  # crash workers and the coordinator
     python -m lha.run --seed 42 --hosts 200 --coordinators 4 --workers 16,16
     python -m lha.run --domain research --seed 42   # the research brief
+    python -m lha.run --seed 42 --model anthropic:claude-sonnet-5-5  # a real model, opt-in
     python -m lha.run --seed 42 --kill-at 120   # crash everything after step 120
     python -m lha.run --resume [SESSION]        # continue an unfinished run (default: latest)
 
@@ -26,9 +27,18 @@ from pathlib import Path
 from uuid import UUID
 
 import httpx
+from pydantic_ai.models import infer_model
 from sqlalchemy import func, select, update
 
-from lha.config import CRASH_LOOP_LIMIT, DEFAULT_FAULT_RATE, DEFAULT_STEP_BUDGET
+from lha.config import (
+    CONTEXT_WINDOW_TOKENS,
+    CRASH_LOOP_LIMIT,
+    DEFAULT_BUDGET_USD,
+    DEFAULT_FAULT_RATE,
+    DEFAULT_STEP_BUDGET,
+    REAL_CONTEXT_WINDOW_TOKENS,
+)
+from lha.core.agent import AUTO, FAKE, resolve_model
 from lha.core.coordinator import progress_line
 from lha.core.domain import create_task, get_domain
 from lha.core.scoring import Score, score_session
@@ -242,6 +252,9 @@ async def create_session(engine, args: argparse.Namespace) -> UUID:
                 crash_rate=args.crashes,
                 partitions=args.coordinators,
                 wakeups="poll" if args.poll else "notify",
+                model=args.model,
+                context_window=args.window,
+                budget_usd=args.budget,
                 goal=domain.goals[args.goal].format(start=", ".join(start), **domain.goal_args(world)),
                 start_points=start,
                 status="running",
@@ -280,6 +293,21 @@ async def release_leases(engine, sid: UUID) -> int:
     return n
 
 
+def model_problem(model: str) -> str | None:
+    """Why a model can't be used, checked before the run starts, or None.
+
+    Building a real model needs its provider's package (uv sync --extra
+    models) and usually an API key in the environment, and it makes no call.
+    """
+    if model == FAKE:
+        return None
+    try:
+        infer_model(model)
+    except Exception as e:
+        return f"{type(e).__name__}: {e} (a real model needs `uv sync --extra models` and its API key)"
+    return None
+
+
 def print_score(score: Score, sid: UUID, elapsed: float) -> Path:
     out_dir = Path("runs") / str(sid)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -315,9 +343,15 @@ async def main(args: argparse.Namespace) -> int:
         if session.status != "running":
             print(f"session {sid} already finished ({session.status}); nothing to resume")
             return 1
+        if problem := model_problem(session.model):
+            print(f"[supervisor] cannot resume on the model {session.model!r}: {problem}")
+            return 2
         n = await release_leases(engine, sid)
         print(f"[supervisor] resuming session {sid} (seed {session.seed}); released {n} lease(s)")
     else:
+        if problem := model_problem(args.model):
+            print(f"[supervisor] cannot use the model {args.model!r}: {problem}")
+            return 2
         sid = await create_session(engine, args)
         async with engine.connect() as conn:
             session = await crud.get_session(conn, sid)
@@ -325,7 +359,8 @@ async def main(args: argparse.Namespace) -> int:
             f"[supervisor] session {sid}: {args.domain}, seed {args.seed}, size {args.hosts}, "
             f"fault rate {args.chaos}, "
             f"goal '{args.goal}', crash rate {args.crashes}, {args.coordinators} coordinator(s), "
-            f"workers {'+'.join(map(str, args.workers))}, {'polling' if args.poll else 'LISTEN/NOTIFY'}"
+            f"workers {'+'.join(map(str, args.workers))}, {'polling' if args.poll else 'LISTEN/NOTIFY'}, "
+            f"model {args.model}" + (f", budget ${args.budget:.2f}" if args.budget is not None else "")
         )
 
     roles = get_domain(session.domain).roles
@@ -363,6 +398,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = _parser().parse_args(argv)
     if args.hosts is None:
         args.hosts = DOMAINS[args.domain].default_size
+    args.model = resolve_model(args.model)
+    real = args.model != FAKE
+    if args.window is None:
+        args.window = REAL_CONTEXT_WINDOW_TOKENS if real else CONTEXT_WINDOW_TOKENS
+    if args.budget is None and real:
+        args.budget = DEFAULT_BUDGET_USD
     return args
 
 
@@ -384,6 +425,13 @@ def _parser() -> argparse.ArgumentParser:
         default=[DEFAULT_WORKERS, DEFAULT_WORKERS], help="workers for the first two roles (default 2,2)",
     )  # fmt: skip
     p.add_argument("--poll", action="store_true", help="poll for work instead of LISTEN/NOTIFY")
+    p.add_argument(
+        "--model", default=os.environ.get("LHA_MODEL", AUTO),
+        help="'auto' (a real model if ANTHROPIC_API_KEY is set, else the fake one), 'fake', "
+        "or a Pydantic AI model name such as anthropic:claude-sonnet-5-5",
+    )  # fmt: skip
+    p.add_argument("--window", type=int, help="tokens per model call (default: 2000 fake, 32000 real)")
+    p.add_argument("--budget", type=float, help="the most a real model may spend, in US dollars (default 5)")
     p.add_argument("--step-budget", type=int, default=DEFAULT_STEP_BUDGET)
     p.add_argument("--max-seconds", type=float, default=600, help="safety limit on wall-clock time")
     p.add_argument("--kill-at", type=int, help="crash the whole run after this many steps")

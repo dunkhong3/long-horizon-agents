@@ -51,6 +51,7 @@ from lha.config import (
     POLL_SECONDS,
     STALL_STEPS,
 )
+from lha.core.agent import FAKE
 from lha.core.domain import Domain, Rejected, create_task, get_domain
 from lha.core.schemas import SUPERSEDED
 from lha.db import crud, make_engine
@@ -330,6 +331,10 @@ class Coordinator:
 
     async def _retry_or_fail(self, conn: AsyncConnection, task: Row, kind: str, reason: str) -> None:
         """A retry is the same row with attempt + 1, after a backoff."""
+        if kind == "not_found" and not self.domain.gone(task, reason):
+            # A 404 for something the task isn't about, so the model asked
+            # for the wrong thing, and that is no reason to give up on the task.
+            kind = "wrong_call"
         probe_at = await self._breaker_failure(conn, task, kind)
         if kind == "context_overflow" and await self.domain.split(self, conn, task, reason):
             return
@@ -491,6 +496,8 @@ class Coordinator:
             reason, partial = self.domain.done[session.goal_kind], False
         elif steps >= session.step_budget:
             reason, partial = f"step budget ({session.step_budget}) used up", True
+        elif session.budget_usd is not None and await crud.cost_usd(conn, self.sid) >= session.budget_usd:
+            reason, partial = f"money budget (${session.budget_usd:.2f}) used up", True
         elif self.deadline and time.time() > self.deadline:
             reason, partial = "time limit reached", True
         elif not await self._has_active_tasks(conn):
@@ -589,11 +596,14 @@ async def progress_line(engine: AsyncEngine, sid: UUID) -> str:
         q = select(tasks.c.status, func.count()).where(tasks.c.session_id == sid).group_by(tasks.c.status)
         by_status = dict((await conn.execute(q)).all())
         extra = await get_domain(session.domain).progress(conn, sid)
+        cost = await crud.cost_usd(conn, sid) if session.model != FAKE else None
     active = sum(by_status.get(s, 0) for s in ACTIVE)
     line = (
         f"step {steps:4d} | tasks: {by_status.get('succeeded', 0)} done, {active} active, "
         f"{by_status.get('failed', 0)} failed"
     )
+    if cost is not None:
+        line += f" | ${cost:.2f} spent"
     return f"{line} | {extra}" if extra else line
 
 

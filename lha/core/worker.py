@@ -17,7 +17,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded
 from sqlalchemy import select
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -173,6 +173,7 @@ class Worker:
             async with self.engine.connect() as conn:
                 packet = await build_packet(conn, self.domain, self.session, task)
             await log("context_packet", packet.model_dump(mode="json"))
+            task_type = self.domain.task_types[task.type]
             ctx = AgentContext(
                 seed=self.session.seed,
                 task_id=task.id,
@@ -182,8 +183,11 @@ class Worker:
                 packet=packet,
                 tools=self.domain.tools(self.http, task.task_key, task.attempt, log, load),
                 log=log,
+                model=self.session.model,
+                instructions=task_type.instructions,
+                window=self.session.context_window,
             )
-            output = await self.domain.task_types[task.type].agent(ctx)
+            output = await task_type.agent(ctx)
             return output.model_dump(mode="json")
         except ToolFailure as e:
             return _error(e.kind, e.message)
@@ -191,6 +195,10 @@ class Worker:
             return _error("context_overflow", str(e))
         except UnexpectedModelBehavior as e:
             return _error("invalid_output", str(e))
+        except (ModelAPIError, UsageLimitExceeded) as e:
+            # A real model's API failed or it made too many calls, which a
+            # later attempt may not, so it is retried like any other error.
+            return _error("model_error", f"{type(e).__name__}: {e}")
         except asyncio.CancelledError:
             raise
         except Exception as e:  # a bug in an agent shouldn't kill the worker

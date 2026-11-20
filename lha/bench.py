@@ -35,7 +35,7 @@ async def run_one(variant: str, seed: int, hosts: int, chaos: float) -> dict[str
     common = ["--seed", str(seed), "--hosts", str(hosts), "--chaos", str(chaos)]
     extra = VARIANTS[variant]
     if extra is None:
-        out = await _exec("lha.run", "--quiet", *common)
+        out = await _exec("lha.run", "--quiet", "--model", "fake", *common)
         match = re.search(r"session ([0-9a-f-]{36})", out)
         if match is None:
             raise RuntimeError(f"system run failed:\n{out}")

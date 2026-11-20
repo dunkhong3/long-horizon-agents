@@ -87,8 +87,10 @@ async function refreshSession() {
   const v = await r.json(), s = v.session;
   $("status").innerHTML = `<span class="status-${esc(s.status)}">${esc(s.status)}</span>`;
   $("progress").textContent = v.progress;
+  const spend = s.model === "fake" ? "" : ` | $${v.cost_usd.toFixed(2)} spent` +
+    (s.budget_usd == null ? "" : ` of $${s.budget_usd.toFixed(2)}`);
   $("meta").textContent = `${s.domain} | seed ${s.seed} | size ${s.size} | fault rate ${s.fault_rate} | ` +
-    `${s.partitions} coordinator(s) | ${s.goal}`;
+    `${s.partitions} coordinator(s) | model ${s.model}${spend} | ${s.goal}`;
   chart(v.timeline, s.step_budget);
   $("tasks").innerHTML = table(["type", ...STATUSES], Object.entries(v.tasks).map(([t, by]) =>
     [`<code>${esc(t)}</code>`, ...STATUSES.map((st) => by[st] ?? '<span class="muted">0</span>')]));

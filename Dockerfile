@@ -6,8 +6,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.8 /uv /bin/uv
 WORKDIR /app
 ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1 PYTHONUNBUFFERED=1
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-dev --no-install-project
+RUN uv sync --locked --no-dev --extra models --no-install-project
 COPY lha ./lha
-RUN uv sync --locked --no-dev
+RUN uv sync --locked --no-dev --extra models
 ENTRYPOINT ["uv", "run", "--no-sync", "python", "-m", "lha.run"]
 CMD ["--seed", "42"]

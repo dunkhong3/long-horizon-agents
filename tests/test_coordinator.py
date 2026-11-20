@@ -56,6 +56,27 @@ async def test_breaker_opens_holds_and_closes(engine):
         assert held.not_before <= datetime.now(UTC)
 
 
+async def test_a_404_drops_a_host_only_when_it_is_for_that_host(engine):
+    sid = await new_session(engine)
+    coord = await coordinator(engine, sid)
+    async with engine.begin() as conn:
+        for host in ("host-5", "host-6"):
+            await add_task(conn, sid, "discover_host", DiscoverInput(host=host))
+        # A 404 for a service the model made up says nothing about host-5,
+        # so the task is tried again, while a 404 for host-6 itself drops it.
+        task = await task_row(conn, sid, "discover_host:host-5")
+        await coord._retry_or_fail(conn, task, "not_found", "/hosts/host-5/services/made-up")
+        task = await task_row(conn, sid, "discover_host:host-5")
+        assert (task.status, task.attempt) == ("ready", 2)
+        assert await crud.current_fact(conn, sid, "host:host-5", F.EXISTS) is None
+
+        task = await task_row(conn, sid, "discover_host:host-6")
+        await coord._retry_or_fail(conn, task, "not_found", "/hosts/host-6")
+        task = await task_row(conn, sid, "discover_host:host-6")
+        assert task.status == "failed"
+        assert (await crud.current_fact(conn, sid, "host:host-6", F.EXISTS)).value is False
+
+
 async def test_reopen_gives_put_off_work_one_more_round(engine):
     sid = await new_session(engine)
     coord = await coordinator(engine, sid)
@@ -186,3 +207,18 @@ async def test_find_all_is_done_only_when_everything_is_checked(engine):
         await fact("service:search@host-2", F.REPLICAS, 2)
         await fact("service:search@host-2", F.VERDICT, "match")
         assert await everything_checked(coord, conn, session)
+
+
+async def test_a_spent_money_budget_ends_the_run_with_a_partial_report(engine):
+    sid = await new_session(engine, model="test", budget_usd=0.05)
+    coord = await coordinator(engine, sid)
+    async with engine.begin() as conn:
+        await add_task(conn, sid, "discover_host", DiscoverInput(host="host-1"))
+        await crud.log_event(conn, sid, "w", "model_call", {"final": True, "cost_usd": 0.03})
+        assert not await coord._check_goal_and_budget(conn)
+        assert (await task_row(conn, sid, "discover_host:host-1")).status == "ready"  # still under budget
+        await crud.log_event(conn, sid, "w", "model_call", {"final": True, "cost_usd": 0.03})
+        await coord._check_goal_and_budget(conn)
+        assert (await task_row(conn, sid, "discover_host:host-1")).status == "cancelled"
+        report = await task_row(conn, sid, "write_report")
+        assert report.input["partial"] is True

@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+env:
+  LHA_MODEL: fake  # CI never calls a real model
+
 jobs:
   test:
     runs-on: ubuntu-latest

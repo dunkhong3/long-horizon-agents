@@ -32,12 +32,22 @@ TIMEOUT_FAULT_SECONDS = 3.0  # how long the server stalls on a timeout fault
 DEFAULT_FAULT_RATE = 0.15  # share of HTTP calls that fail
 MODEL_ERROR_RATE = 0.05  # share of final model outputs that are corrupted
 
-# Context packets.
-CONTEXT_WINDOW_TOKENS = 2000
-OUTPUT_RESERVE_TOKENS = 400  # room for the model's answer
-WORK_RESERVE_TOKENS = 800  # room for the attempt's own tool calls and results
+# Context packets. Every model call has a window, which is shared between
+# the model's answer, the attempt's own tool calls and results, and the
+# packet, so the packet gets what is left, 800 of the fake model's 2000.
+CONTEXT_WINDOW_TOKENS = 2000  # the fake model's window
+REAL_CONTEXT_WINDOW_TOKENS = 32000  # a real model's window, unless --window says otherwise
+OUTPUT_RESERVE_SHARE = 0.2  # room for the model's answer
+WORK_RESERVE_SHARE = 0.4  # room for the attempt's own tool calls and results
 RECENT_EVENTS = 5
 MAX_POINTERS = 40
+
+# Real models, which are opt-in (see --model).
+DEFAULT_REAL_MODEL = "anthropic:claude-sonnet-5-5"  # what 'auto' picks when ANTHROPIC_API_KEY is set
+DEFAULT_BUDGET_USD = 5.0  # what a run on a real model may spend, unless --budget says otherwise
+# US dollars per million input and output tokens for a model Pydantic AI's
+# price list doesn't know, set high on purpose so the budget still holds.
+FALLBACK_PRICE_PER_MILLION = (15.0, 75.0)
 
 # Runs.
 DEFAULT_HOSTS = 20

@@ -1,4 +1,10 @@
+import os
+
 import pytest_asyncio
+
+# Tests only ever run on the fake model, even when a provider key is set, so
+# they cost nothing (and every process they start inherits this).
+os.environ["LHA_MODEL"] = "fake"
 
 from lha.core.domain import create_task
 from lha.db import init_schema, make_engine

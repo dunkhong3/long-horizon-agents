@@ -50,6 +50,10 @@ class TaskType:
     output: type[BaseModel]
     role: str
     agent: Callable[["AgentContext"], Awaitable[BaseModel]]
+    # What the model is told to do, which is its system prompt. The fake
+    # model has its policy instead, but it is shown these too, so every
+    # prompt is the same size whichever model reads it.
+    instructions: str = ""
     network: bool = False  # whether its failures count against its resource's circuit breaker
     rereads: bool = False  # whether it reads again on purpose, so its reads are never 'repeated'
 
@@ -112,6 +116,15 @@ class Domain:
         """Check a valid result against its sources and commit its facts and
         follow-ups, or raise Rejected."""
         raise NotImplementedError
+
+    def gone(self, task: Row, path: str) -> bool:
+        """Whether a 404 for this path means the thing the task is about doesn't exist.
+
+        A 404 for anything else is a call the model got wrong, such as a
+        made-up name, which says nothing about the task's own resource and
+        which another attempt may get right.
+        """
+        return True
 
     async def replan(
         self, coord: "Coordinator", conn: AsyncConnection, task: Row, kind: str, delay: float, probe: bool

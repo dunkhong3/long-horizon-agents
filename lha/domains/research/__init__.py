@@ -47,9 +47,15 @@ class ResearchDomain(Domain):
     name = "research"
     roles = ("reader", "analyst", "writer")
     task_types = {
-        "read_source": TaskType(ReadInput, ReadOutput, "reader", agents.run_read, network=True),
-        "reconcile_project": TaskType(ReconcileInput, ReconcileOutput, "analyst", agents.run_reconcile),
-        "write_brief": TaskType(BriefInput, BriefOutput, "writer", agents.run_brief),
+        "read_source": TaskType(
+            ReadInput, ReadOutput, "reader", agents.run_read, agents.READ_INSTRUCTIONS, network=True
+        ),
+        "reconcile_project": TaskType(
+            ReconcileInput, ReconcileOutput, "analyst", agents.run_reconcile, agents.RECONCILE_INSTRUCTIONS
+        ),
+        "write_brief": TaskType(
+            BriefInput, BriefOutput, "writer", agents.run_brief, agents.BRIEF_INSTRUCTIONS
+        ),
     }
     report_type = "write_brief"
     default_size = 60
@@ -104,6 +110,10 @@ class ResearchDomain(Domain):
             await rules.accept_reconcile(coord, conn, task, out)
         else:
             await rules.accept_brief(coord, conn, task, out)
+
+    def gone(self, task: Row, path: str) -> bool:
+        """A 404 counts only for the source the task reads."""
+        return path == f"/sources/{task.input.get('source')}"
 
     async def replan(self, coord, conn, task, kind, delay, probe) -> None:
         await rules.replan(coord, conn, task, kind, delay, probe)

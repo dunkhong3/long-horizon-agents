@@ -43,14 +43,20 @@ class AuditDomain(Domain):
     roles = ("discovery", "analysis", "reporter")
     task_types = {
         "discover_host": TaskType(
-            DiscoverInput, DiscoverOutput, "discovery", agents.run_discover, network=True
+            DiscoverInput, DiscoverOutput, "discovery", agents.run_discover,
+            agents.DISCOVER_INSTRUCTIONS, network=True,
         ),
-        "compare_service": TaskType(CompareInput, CompareOutput, "analysis", agents.run_compare),
+        "compare_service": TaskType(
+            CompareInput, CompareOutput, "analysis", agents.run_compare, agents.COMPARE_INSTRUCTIONS
+        ),
         "verify_drift": TaskType(
-            VerifyInput, VerifyOutput, "analysis", agents.run_verify, network=True, rereads=True
+            VerifyInput, VerifyOutput, "analysis", agents.run_verify,
+            agents.VERIFY_INSTRUCTIONS, network=True, rereads=True,
         ),
-        "write_report": TaskType(ReportInput, ReportOutput, "reporter", agents.run_report),
-    }
+        "write_report": TaskType(
+            ReportInput, ReportOutput, "reporter", agents.run_report, agents.REPORT_INSTRUCTIONS
+        ),
+    }  # fmt: skip
     report_type = "write_report"
     default_size = DEFAULT_HOSTS
     goals = {
@@ -102,6 +108,15 @@ class AuditDomain(Domain):
 
     async def accept(self, coord, conn, task, out) -> None:
         await rules.ACCEPT[task.type](coord, conn, task, out)
+
+    def gone(self, task: Row, path: str) -> bool:
+        """A 404 counts only for the task's own host, or for a verify, its own service."""
+        if "host" not in task.input:
+            return True  # the report reads nothing over the network
+        host = f"/hosts/{task.input['host']}"
+        if task.type == "verify_drift":
+            return path in (host, f"{host}/services/{task.input['service']}")
+        return path == host
 
     async def replan(self, coord, conn, task, kind, delay, probe) -> None:
         await rules.replan(coord, conn, task, kind, delay, probe)

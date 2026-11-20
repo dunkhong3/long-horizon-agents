@@ -39,6 +39,17 @@ HOST_NAME = re.compile(r"\bhost-\d+\b")
 
 # --- discovery ---------------------------------------------------------------------
 
+DISCOVER_INSTRUCTIONS = """\
+You explore one host of a cloud deployment. Read it with get_host, then read
+every service it lists with get_service and every page of every document it
+lists with fetch_document, where page 0 says how many pages there are. If
+your input names services, documents or a page, read only those. When a
+pointer in your prompt already holds a read, fetch it with fetch_pointer
+instead of calling the network again. Report exactly what you read, each
+value with the event_id of the call it came from, and for each page the
+hosts it mentions and, for registry.json, its entries. Never guess a value.
+"""
+
 
 def discover_policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Call | Final:
     inp = packet.pinned.input
@@ -133,6 +144,19 @@ async def run_discover(ctx: AgentContext) -> DiscoverOutput:
 
 # --- analysis ----------------------------------------------------------------------
 
+COMPARE_INSTRUCTIONS = """\
+Compare one service's replica count with the registry, using only the facts
+in your prompt, which are the service's config.replicas fact and its
+registry entry. Report both numbers, whether they differ, and the ids of the
+two facts you used. Make no tool calls.
+"""
+
+VERIFY_INSTRUCTIONS = """\
+Read one service again with get_service, which is a fresh read, and report
+the replica count you saw with the event_id of that call. Do not use
+pointers, and decide nothing about drift.
+"""
+
 
 def compare_policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Final:
     service, host = packet.pinned.input["service"], packet.pinned.input["host"]
@@ -191,6 +215,13 @@ async def run_verify(ctx: AgentContext) -> VerifyOutput:
 
 
 # --- the reporter --------------------------------------------------------------------
+
+REPORT_INSTRUCTIONS = """\
+Write the final finding from the verified drift facts in your prompt. List
+every verified drift with its service, host, expected and actual counts and
+the id of its fact, and add a short markdown summary. Use verified facts
+only. Make no tool calls.
+"""
 
 
 def report_policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Final:

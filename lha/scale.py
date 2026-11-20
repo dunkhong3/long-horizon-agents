@@ -39,7 +39,7 @@ async def run_one(
     args: argparse.Namespace, discovery: int, analysis: int, coordinators: int, wakeups: str
 ) -> dict:
     cmd = [
-        "--quiet", "--seed", str(args.seed), "--hosts", str(args.hosts), "--goal", "all",
+        "--quiet", "--model", "fake", "--seed", str(args.seed), "--hosts", str(args.hosts), "--goal", "all",
         "--step-budget", "100000", "--workers", f"{discovery},{analysis}",
         "--coordinators", str(coordinators), *(["--poll"] if wakeups == "poll" else []),
     ]  # fmt: skip

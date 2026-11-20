@@ -19,6 +19,13 @@ from lha.domains.research.world import cites_in, claims_in
 
 # --- the reader -----------------------------------------------------------------------
 
+READ_INSTRUCTIONS = """\
+Read one source with get_source, or with fetch_pointer when a pointer in
+your prompt already holds it. Report every launch year it states, each with
+the project, the year and the sentence it comes from word for word, every
+other source it cites, and the event_id of the call you read it with.
+"""
+
 
 def read_policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Call | Final:
     source = packet.pinned.input["source"]
@@ -58,6 +65,13 @@ async def run_read(ctx: AgentContext) -> ReadOutput:
 
 # --- the analyst ----------------------------------------------------------------------
 
+RECONCILE_INSTRUCTIONS = """\
+Work out one project's launch year from the claim facts in your prompt. A
+year counts only when two or more sources agree on it and outnumber every
+other year. Report that year, or null when the claims don't settle it yet,
+and the ids of the claim facts that agree on it. Make no tool calls.
+"""
+
 
 def reconcile_policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Final:
     project = packet.pinned.input["project"]
@@ -83,6 +97,12 @@ async def run_reconcile(ctx: AgentContext) -> ReconcileOutput:
 
 
 # --- the writer -----------------------------------------------------------------------
+
+BRIEF_INSTRUCTIONS = """\
+Write the brief from the verified answer facts in your prompt. List every
+project with its launch year and the id of its answer fact, and add a short
+markdown summary. Use verified answers only. Make no tool calls.
+"""
 
 
 def brief_policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Final:
