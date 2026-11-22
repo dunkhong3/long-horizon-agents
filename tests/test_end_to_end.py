@@ -64,6 +64,15 @@ def test_code_passes():
     assert "the check passes on the branch" in result.stdout and "no test was changed" in result.stdout
 
 
+def test_extract_passes():
+    """Batch extraction from the mock invoices, the fourth domain on the same core."""
+    result = run("--domain", "extract", "--seed", "4", "--goal", "all", "--chaos", "0.3")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        "every value is right" in result.stdout and "every unstated value is marked missing" in result.stdout
+    )
+
+
 def test_crash_then_resume_passes():
     crashed = run("--seed", "103", "--kill-at", "100")
     assert crashed.returncode == 137, crashed.stdout + crashed.stderr

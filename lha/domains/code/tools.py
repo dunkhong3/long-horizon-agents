@@ -1,12 +1,8 @@
 """The code tools, which read the session branch and run its check.
 
-They work on the git workspace directly, inside the worker, and not over
-HTTP, but every call still goes through ToolBox._call, so it is logged as a
-tool_call event with its full response, retried within the attempt when it
-fails for a short-lived reason, and cited by results like any other call.
-On the mock repository each call can fail on purpose, with the same seeded
-dice the mock worlds use (lha/core/world.py), and a real repository gets no
-injected faults.
+They work on the git workspace directly, inside the worker, as a
+LocalToolBox (lha/core/tools.py), so every call is logged, retried and cited
+like any other, and on the mock repository each call can fail on purpose.
 
 Files are read from the branch head, the newest commit the coordinator has
 made, and run_check always checks the head as well. A mistake in what the
@@ -15,35 +11,29 @@ as an answer that says what is wrong, so the model can try again within
 the same attempt.
 """
 
-import asyncio
 import shlex
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy.engine import Row
 
 from lha.config import CONTEXT_WINDOW_TOKENS
-from lha.core.tools import ToolBox, ToolFailure
+from lha.core.tools import LocalToolBox, ToolFailure
 from lha.domains.code import workspace as ws
-from lha.faults import pick_fault, roll
 
 PAGE_LINES = {"fake": 20, "real": 200}  # lines per page of a file, by the size of the window
 SEARCH_MATCHES = 30
 LISTED_FILES = 300
 
 
-class CodeTools(ToolBox):
+class CodeTools(LocalToolBox):
     def __init__(self, *args: Any, session: Row, **kwargs: Any):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, session=session, **kwargs)
         self.work = Path(session.params["work"])
         self.template = session.params["check"].replace("{python}", shlex.quote(sys.executable))
         self.protected = tuple(session.params.get("protected", ()))
-        self.mock = session.world == "mock"
-        self.seed, self.fault_rate = session.seed, session.fault_rate
         self.page_lines = PAGE_LINES["fake" if session.context_window <= CONTEXT_WINDOW_TOKENS else "real"]
-        self._work_fn: Callable[[], dict[str, Any]] | None = None
 
     # --- the tools ----------------------------------------------------------------------
 
@@ -105,17 +95,8 @@ class CodeTools(ToolBox):
 
     # --- calls --------------------------------------------------------------------------
 
-    async def _run(self, tool: str, path: str, work: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-        self._work_fn = work  # calls within an attempt come one at a time
-        return await self._call(tool, path, ())
-
     async def _request(self, path: str, call_no: int, required: tuple[str, ...]) -> dict[str, Any]:
-        if self.mock:
-            fault = pick_fault(roll(self.seed, self.task_key, self.attempt, call_no), self.fault_rate)
-            if fault is not None:
-                raise ToolFailure(fault)
-        assert self._work_fn is not None
         try:
-            return await asyncio.to_thread(self._work_fn)
+            return await super()._request(path, call_no, required)
         except ws.WorkspaceError as e:
             raise ToolFailure("workspace_error", str(e)) from None

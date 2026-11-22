@@ -91,7 +91,7 @@ class AuditDomain(Domain):
     def start(self, world: World) -> list[str]:
         return list(START_HOSTS)
 
-    def start_tasks(self, world: World, goal: str) -> list[tuple[str, BaseModel]]:
+    def start_tasks(self, world: World, goal: str, params: dict) -> list[tuple[str, BaseModel]]:
         return [("discover_host", DiscoverInput(host=host)) for host in START_HOSTS]
 
     def task_key(self, task_type: str, inp: BaseModel) -> str:

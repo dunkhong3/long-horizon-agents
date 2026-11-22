@@ -122,7 +122,7 @@ class CodeDomain(Domain):
     def start(self, world: MockRepo | None) -> list[str]:
         return []
 
-    def start_tasks(self, world: MockRepo | None, goal: str) -> list[tuple[str, BaseModel]]:
+    def start_tasks(self, world: MockRepo | None, goal: str, params: dict) -> list[tuple[str, BaseModel]]:
         return [("check_all", CheckInput())]
 
     def task_key(self, task_type: str, inp: BaseModel) -> str:

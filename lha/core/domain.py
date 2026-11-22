@@ -5,9 +5,9 @@ the context packet builder, the worker process, retries, splits, the circuit
 breaker, stall detection and the supervisor) knows nothing about networks or
 documents. A domain supplies the rest, which is its mock world, its task
 types with their schemas, roles and agents, its tools, and the rules the
-coordinator follows for its results. Three domains live in lha/domains, the
-replica audit, verified research and code work, and they share every line of
-the core.
+coordinator follows for its results. Four domains live in lha/domains, the
+replica audit, verified research, code work and batch extraction, and they
+share every line of the core.
 """
 
 import hashlib
@@ -71,10 +71,11 @@ class Domain:
     goals: dict[str, str]  # goal kind -> goal text, with {start} for the starting points
     done: dict[str, str]  # goal kind -> what the coordinator says when the goal is met
     # Whether it can also run on the real web, with a question of its own
-    # instead of a mock world, or on a real repository, which both need a
-    # real model (see --question and --repo).
+    # instead of a mock world, on a real repository or on a real folder of
+    # documents, which all need a real model (see --question, --repo, --docs).
     real_web: bool = False
     real_repo: bool = False
+    real_docs: bool = False
 
     # --- the world ----------------------------------------------------------
 
@@ -116,7 +117,8 @@ class Domain:
         """Anything else the goal text names, besides the starting points."""
         return {}
 
-    def start_tasks(self, world: Any, goal: str) -> list[tuple[str, BaseModel]]:
+    def start_tasks(self, world: Any, goal: str, params: dict[str, Any]) -> list[tuple[str, BaseModel]]:
+        """The first tasks, from the world, the goal and the parameters prepare() returned."""
         raise NotImplementedError
 
     def task_key(self, task_type: str, inp: BaseModel) -> str:

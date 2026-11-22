@@ -43,6 +43,8 @@ jobs:
         run: uv run python -m lha.run --domain research --seed 42 --goal all --quiet
       - name: Code work on the mock repository, the third domain
         run: uv run python -m lha.run --domain code --seed 42 --goal all --quiet
+      - name: Batch extraction from the mock invoices, the fourth domain
+        run: uv run python -m lha.run --domain extract --seed 42 --goal all --quiet
 
   compose:
     runs-on: ubuntu-latest

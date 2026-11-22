@@ -23,7 +23,7 @@ just install   # uv sync + install git hooks
 just check     # ruff format --check + ruff check
 just fmt       # auto-fix
 just test      # pytest (needs Postgres)
-just start     # run the system (--domain audit, research or code)
+just start     # run the system (--domain audit, research, code or extract)
 just research  # research a question on the real web, which needs a real model
 uv run lha     # start runs in the background, follow them, read reports, or serve MCP
 just up        # Postgres and one full run, both in docker compose

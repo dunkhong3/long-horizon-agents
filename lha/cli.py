@@ -3,6 +3,7 @@
     lha research "question"            research a question on the real web (needs a real model)
     lha research "question" --detach   the same in the background, printing the session id
     lha code REPO --check "..."        make a check pass on a git repository (needs a real model)
+    lha extract DIR --fields "..."     fill in a table of fields from a folder of documents (a real model)
     lha start [options]                any run, with the options of python -m lha.run
     lha list                           the latest runs
     lha status [SESSION]               how a run is doing (default: the latest)
@@ -26,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 PROBE_TIMEOUT_SECONDS = 5.0
-WORLDS = {"mock": "a mock world", "web": "the real web", "repo": "a real repository"}
+WORLDS = {"mock": "a mock world", "web": "the real web", "repo": "a real repository", "docs": "a real folder"}
 
 
 def load_env(path: Path = Path(".env")) -> None:
@@ -86,6 +87,10 @@ def _research(args: argparse.Namespace, rest: list[str]) -> int:
 
 def _code(args: argparse.Namespace, rest: list[str]) -> int:
     return _run(["--repo", args.repo, *rest])
+
+
+def _extract(args: argparse.Namespace, rest: list[str]) -> int:
+    return _run(["--docs", args.folder, *rest])
 
 
 def _start(args: argparse.Namespace, rest: list[str]) -> int:
@@ -227,6 +232,9 @@ def _parser() -> argparse.ArgumentParser:
     command("code", _code, "make a check pass on a git repository, with a real model", True).add_argument(
         "repo"
     )
+    command(
+        "extract", _extract, "fill in a table from a folder of documents, with a real model", True
+    ).add_argument("folder")
     command("start", _start, "start any run", True)
     command("resume", _resume, "continue an unfinished run", True).add_argument("session", nargs="?")
     c = command("list", _list, "the latest runs")

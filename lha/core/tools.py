@@ -19,6 +19,7 @@ from uuid import UUID
 import httpx
 
 from lha.config import TOOL_RETRIES, TOOL_RETRY_DELAY_SECONDS, TOOL_TIMEOUT_SECONDS
+from lha.faults import pick_fault, roll
 
 # log(kind, payload) -> event id, supplied by the worker.
 EventLogger = Callable[[str, dict[str, Any]], Awaitable[UUID]]
@@ -46,6 +47,15 @@ class NotFound(ToolFailure):
 
     def __init__(self, message: str = ""):
         super().__init__("not_found", message)
+
+
+class Unreadable(ToolFailure):
+    """Something that is not text, such as a PDF or an image, which another try won't change."""
+
+    permanent = True
+
+    def __init__(self, message: str = ""):
+        super().__init__("unreadable", message)
 
 
 class ToolBox:
@@ -139,3 +149,35 @@ class ToolBox:
         if not isinstance(data, dict) or any(k not in data for k in required):
             raise ToolFailure("malformed_response", f"missing one of {required}")
         return data
+
+
+class LocalToolBox(ToolBox):
+    """Tools that do their work inside the worker, such as reading files or
+    running a check, and not over HTTP.
+
+    Every call still goes through `_call`, so it is logged as a tool_call
+    event with its full response, retried within the attempt when it fails
+    for a short-lived reason, and cited by results like any other call. In a
+    mock world each call can fail on purpose, with the same seeded dice the
+    mock worlds roll (lha/core/world.py), and in a real one it never does.
+    A tool method hands its work to `_run`, as a function to run in a thread.
+    """
+
+    def __init__(self, *args: Any, session: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.session = session
+        self.mock = session.world == "mock"
+        self._work_fn: Callable[[], dict[str, Any]] | None = None
+
+    async def _run(self, tool: str, path: str, work: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        self._work_fn = work  # the calls of one attempt come one at a time
+        return await self._call(tool, path, ())
+
+    async def _request(self, path: str, call_no: int, required: tuple[str, ...]) -> dict[str, Any]:
+        if self.mock:
+            s = self.session
+            fault = pick_fault(roll(s.seed, self.task_key, self.attempt, call_no), s.fault_rate)
+            if fault is not None:
+                raise ToolFailure(fault)
+        assert self._work_fn is not None
+        return await asyncio.to_thread(self._work_fn)

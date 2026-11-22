@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import httpx
 
-from lha.core.tools import NotFound, ToolBox, ToolFailure
+from lha.core.tools import NotFound, ToolBox, ToolFailure, Unreadable
 from lha.domains.research.tasks import page_path
 from lha.domains.research.web import (
     FETCH_TIMEOUT_SECONDS,
@@ -24,15 +24,6 @@ from lha.domains.research.web import (
 )
 
 PAGE_FIELDS = ("url", "title", "page", "pages", "text")
-
-
-class Unreadable(ToolFailure):
-    """A page that is not text, such as a PDF or an image, which another try won't change."""
-
-    permanent = True
-
-    def __init__(self, message: str = ""):
-        super().__init__("unreadable", message)
 
 
 class ResearchTools(ToolBox):

@@ -2,6 +2,7 @@
 
 from lha.domains.audit import AUDIT
 from lha.domains.code import CODE
+from lha.domains.extract import EXTRACT
 from lha.domains.research import RESEARCH
 
-DOMAINS = {"audit": AUDIT, "research": RESEARCH, "code": CODE}
+DOMAINS = {"audit": AUDIT, "research": RESEARCH, "code": CODE, "extract": EXTRACT}

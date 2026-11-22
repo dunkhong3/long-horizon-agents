@@ -95,7 +95,7 @@ class ResearchDomain(Domain):
     def goal_args(self, world: MockWeb | None) -> dict[str, str]:
         return {"question": world.question if world is not None else ""}
 
-    def start_tasks(self, world: MockWeb | None, goal: str) -> list[tuple[str, BaseModel]]:
+    def start_tasks(self, world: MockWeb | None, goal: str, params: dict) -> list[tuple[str, BaseModel]]:
         return [("plan_research", PlanInput(question=goal))]
 
     def task_key(self, task_type: str, inp: BaseModel) -> str:

@@ -242,9 +242,9 @@ def _free_port() -> int:
 
 
 def world_kind(args: argparse.Namespace) -> str:
-    """'web' with --question, 'repo' with --repo, and otherwise 'mock', a mock
-    world generated from the seed."""
-    return "web" if args.question else "repo" if args.repo else "mock"
+    """'web' with --question, 'repo' with --repo, 'docs' with --docs, and
+    otherwise 'mock', a mock world generated from the seed."""
+    return "web" if args.question else "repo" if args.repo else "docs" if args.docs else "mock"
 
 
 async def create_session(engine, args: argparse.Namespace) -> UUID:
@@ -281,7 +281,7 @@ async def create_session(engine, args: argparse.Namespace) -> UUID:
             )
         )
         await crud.log_event(conn, sid, "supervisor", "session_started", {"seed": args.seed})
-        for task_type, inp in domain.start_tasks(world, goal):
+        for task_type, inp in domain.start_tasks(world, goal, params):
             await create_task(conn, sid, domain, task_type, inp, partitions=args.coordinators)
     return sid
 
@@ -493,6 +493,7 @@ def real_world_problem(args: argparse.Namespace) -> str | None:
     for flag, given, allowed in (
         ("--question", args.question, domain.real_web),
         ("--repo", args.repo, domain.real_repo),
+        ("--docs", args.docs, domain.real_docs),
     ):
         if given and not allowed:
             return f"{args.domain} doesn't run that way, so it takes no {flag}"
@@ -505,13 +506,17 @@ def real_world_problem(args: argparse.Namespace) -> str | None:
         )
     if args.repo and "{item}" not in shlex.split(args.check or ""):
         return "--repo needs --check, the command that must pass, with {item} as a word where one item goes"
+    if args.docs and not (args.fields or "").strip(" ;"):
+        return "--docs needs --fields, the fields to find, such as 'invoice number; total: the amount to pay'"
     return None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = _parser().parse_args(argv)
     if args.domain is None:
-        args.domain = "research" if args.question else "code" if args.repo else "audit"
+        args.domain = (
+            "research" if args.question else "code" if args.repo else "extract" if args.docs else "audit"
+        )
     if args.hosts is None:
         args.hosts = DOMAINS[args.domain].default_size
     args.model = resolve_model(args.model)
@@ -536,6 +541,12 @@ def _parser() -> argparse.ArgumentParser:
         help="with --repo, the command that must pass, with {item} where one failing test or file goes",
     )
     p.add_argument("--allow-test-edits", action="store_true", help="with --repo, let fixes change tests too")
+    p.add_argument(
+        "--docs", help="extract fields from the documents in this folder with a real model (domain extract)"
+    )
+    p.add_argument(
+        "--fields", help="with --docs, the fields to find, as 'name; name: what its value looks like'"
+    )
     p.add_argument("--seed", type=int, default=42, help="fixes the world and the faults")
     p.add_argument(
         "--hosts", "--size", type=int, help="size of the world (hosts, sources), with a default per domain"

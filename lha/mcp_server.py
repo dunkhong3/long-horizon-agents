@@ -36,8 +36,10 @@ lha runs long tasks in the background. It researches a question on the real
 web, where every answer in its report is a value that two or more
 independent sites state, each quoted word for word from the page it came
 from, or it makes a check such as a test suite pass on a git repository, on
-a branch of its own, where every commit is a fix that passed its check.
-Start a run with start_research or start_code_task, which return at once,
+a branch of its own, where every commit is a fix that passed its check, or
+it fills in a table of fields from a folder of documents, quoting each value.
+Start a run with start_research, start_code_task or start_extraction, which
+return at once,
 then check it now and then with
 run_status, which also says what it has spent, and read the result with
 run_report once its status is no longer 'running'. A run whose supervisor
@@ -84,6 +86,28 @@ async def start_code_task(
     """
     argv = ["--repo", repo, "--check", check, "--budget", str(budget_usd)]
     args = parse_args(argv + (["--allow-test-edits"] if allow_test_edits else []))
+    try:
+        sid = await launch(args)
+    except ValueError as e:
+        raise ToolError(str(e)) from None
+    except (OSError, SQLAlchemyError) as e:
+        raise ToolError(_database_hint(e)) from None
+    return {"session_id": str(sid), "status": "running", "log": f"runs/{sid}/run.log"}
+
+
+@server.tool()
+async def start_extraction(
+    folder: str, fields: str, budget_usd: float = DEFAULT_BUDGET_USD
+) -> dict[str, Any]:
+    """Fill in a table of fields from every document in a folder, in the background.
+
+    The fields are written as 'invoice number; total: the amount to pay', each
+    with an optional note after a colon on what its value looks like. Every
+    value in the table is quoted from its document, and a field a document
+    doesn't state is left empty. It answers at once with the session id, and
+    run_report says where the table is, as CSV and as JSON, once it is done.
+    """
+    args = parse_args(["--docs", folder, "--fields", fields, "--budget", str(budget_usd)])
     try:
         sid = await launch(args)
     except ValueError as e:

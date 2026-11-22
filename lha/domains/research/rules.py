@@ -13,7 +13,6 @@ code from the facts.
 
 import hashlib
 import re
-import unicodedata
 from collections import Counter
 from typing import TYPE_CHECKING
 
@@ -23,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from lha.config import MAX_ROUNDS
 from lha.core.domain import Rejected
+from lha.core.quotes import within
 from lha.core.schemas import SUPERSEDED, VERIFIED
 from lha.db import crud
 from lha.db.models import facts, tasks
@@ -137,9 +137,9 @@ async def accept_read(coord: "Coordinator", conn: AsyncConnection, task: Row, ou
         source = cited.get(claim.event_id)
         if source is None or source["tool"] != "fetch_page" or source["response"]["url"] != inp.url:
             raise Rejected(f"claim cites {claim.event_id}, which is not a read of {inp.url} in this attempt")
-        if not _within(claim.quote, source["response"]["text"]):
+        if not within(claim.quote, source["response"]["text"]):
             raise Rejected(f"the page doesn't say {claim.quote[:80]!r}")
-        if not _within(claim.value, claim.quote, whole_words=True):
+        if not within(claim.value, claim.quote, whole_words=True):
             raise Rejected(f"the value {claim.value!r} is not in its quote")
         cell = cells.get((_fold(claim.subject), _fold(claim.attribute)))
         if cell is not None:  # values the plan didn't ask for are left out
@@ -430,25 +430,6 @@ URL = re.compile(r"https?://[^\s<>\"'()\[\]]+")
 def urls_in(text: str) -> set[str]:
     """Every whole URL in a text, without the punctuation that ends a sentence."""
     return {m.rstrip(".,;:!?") for m in URL.findall(text)}
-
-
-def _within(needle: str, haystack: str, whole_words: bool = False) -> bool:
-    """Whether a quote or value appears in a text, ignoring case, spacing and
-    the difference between curly and straight quotes and dashes, where a
-    value must be whole words, so '19' is not in 'launched in 1997'."""
-    needle, haystack = _flat(needle), _flat(haystack)
-    if not needle:
-        return False
-    if whole_words:
-        return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack) is not None
-    return needle in haystack
-
-
-def _flat(s: str) -> str:
-    s = unicodedata.normalize("NFKC", s)
-    for a, b in (("‘", "'"), ("’", "'"), ("“", '"'), ("”", '"'), ("–", "-"), ("—", "-")):
-        s = s.replace(a, b)
-    return " ".join(s.casefold().split())
 
 
 def _fold(name: str) -> str:
