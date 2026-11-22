@@ -493,7 +493,7 @@ lha/
   run.py           supervisor + CLI, with --detach for runs in the background
   cli.py           the lha command: research, start, list, status, report, resume, mcp
   runs.py          what runs are doing and what they found, for lha and the MCP server
-  mcp_server.py    the MCP server, so an assistant can hand research to lha
+  mcp_server.py    the MCP server, so an assistant can hand long tasks to lha
   dashboard.py     the live dashboard (with dashboard.html)
   baseline.py      the naive full-history agent we compare against
   bench.py         runs the system and the baseline on the same worlds

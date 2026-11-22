@@ -103,7 +103,7 @@ uv run lha list                                 # the latest runs
 uv run lha resume                               # continue the latest unfinished run
 ```
 
-An assistant such as Claude Code can hand research to the system by itself, through an MCP server, which is a process that offers tools to an assistant over the Model Context Protocol (`lha/mcp_server.py`). Once it is added with the command below, run in this folder, every Claude Code session can start research, code work or an extraction, check on it and read the report, while the key and the database come from this folder's `.env`.
+An assistant such as Claude Code can hand long tasks to the system by itself, through an MCP server, which is a process that offers tools to an assistant over the Model Context Protocol (`lha/mcp_server.py`). Once it is added with the command below, run in this folder, every Claude Code session can start research, code work or an extraction, check on it and read the report, while the key and the database come from this folder's `.env`.
 
 ```bash
 uv sync --extra mcp --extra models
