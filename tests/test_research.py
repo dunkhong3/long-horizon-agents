@@ -25,7 +25,7 @@ from lha.domains.research.world import (
     generate_web,
     links_in,
 )
-from lha.run import parse_args, question_problem, time_limit
+from lha.run import parse_args, real_world_problem, time_limit
 from tests.conftest import add_task, new_session
 
 # --- the mock web -----------------------------------------------------------------------
@@ -241,10 +241,10 @@ def test_a_native_search_is_logged_with_the_urls_it_found():
 
 def test_a_question_needs_the_research_domain_and_a_real_model():
     args = parse_args(["--question", "Who maintains Atlas?", "--model", "test"])
-    assert args.domain == "research" and question_problem(args) is None
+    assert args.domain == "research" and real_world_problem(args) is None
     audit = parse_args(["--domain", "audit", "--question", "Who maintains Atlas?", "--model", "test"])
-    assert "mock world" in question_problem(audit)
-    assert "real model" in question_problem(
+    assert "takes no --question" in real_world_problem(audit)
+    assert "real model" in real_world_problem(
         parse_args(["--question", "Who maintains Atlas?", "--model", "fake"])
     )
     assert parse_args([]).domain == "audit"

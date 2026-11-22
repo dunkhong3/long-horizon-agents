@@ -181,9 +181,7 @@ class Worker:
                 task_type=task.type,
                 attempt=task.attempt,
                 packet=packet,
-                tools=self.domain.tools(
-                    self.http, task.task_key, task.attempt, log, load, world=self.session.world
-                ),
+                tools=self.domain.tools(self.http, task.task_key, task.attempt, log, load, self.session),
                 log=log,
                 model=self.session.model,
                 instructions=task_type.instructions,

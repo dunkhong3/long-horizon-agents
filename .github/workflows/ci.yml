@@ -41,6 +41,8 @@ jobs:
         run: uv run python -m lha.bench --seeds 1 --hosts 20
       - name: Verified research on the mock web, the second domain
         run: uv run python -m lha.run --domain research --seed 42 --goal all --quiet
+      - name: Code work on the mock repository, the third domain
+        run: uv run python -m lha.run --domain code --seed 42 --goal all --quiet
 
   compose:
     runs-on: ubuntu-latest

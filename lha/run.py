@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -111,7 +112,7 @@ class Supervisor:
 
     async def start(self) -> None:
         s = self.session
-        if s.world == "mock":  # on the real web the tools reach the pages themselves
+        if get_domain(s.domain).world_process(s):  # otherwise the tools reach their world themselves
             self.world = await start_world(s.domain, s.seed, s.n_hosts, s.fault_rate, s.goal_kind)
         for partition in range(s.partitions):
             await self._start_coordinator(partition)
@@ -240,12 +241,22 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def world_kind(args: argparse.Namespace) -> str:
+    """'web' with --question, 'repo' with --repo, and otherwise 'mock', a mock
+    world generated from the seed."""
+    return "web" if args.question else "repo" if args.repo else "mock"
+
+
 async def create_session(engine, args: argparse.Namespace) -> UUID:
     sid = uuid7()
     domain = get_domain(args.domain)
-    world = None if args.question else domain.make_world(args.seed, args.hosts, args.goal)
+    kind = world_kind(args)
+    world = domain.make_world(args.seed, args.hosts, args.goal) if kind == "mock" else None
+    params = domain.prepare(sid, world, args)
     start = domain.start(world)
-    goal = args.question or domain.goals[args.goal].format(start=", ".join(start), **domain.goal_args(world))
+    goal = args.question or domain.goals[args.goal].format(
+        start=", ".join(start), **domain.goal_args(world), **params
+    )
     async with engine.begin() as conn:
         await conn.execute(
             sessions.insert().values(
@@ -262,7 +273,8 @@ async def create_session(engine, args: argparse.Namespace) -> UUID:
                 model=args.model,
                 context_window=args.window,
                 budget_usd=args.budget,
-                world="web" if args.question else "mock",
+                world=kind,
+                params=params,
                 goal=goal,
                 start_points=start,
                 status="running",
@@ -359,7 +371,7 @@ async def main(args: argparse.Namespace) -> int:
         n = await release_leases(engine, sid)
         print(f"[supervisor] resuming session {sid} (seed {session.seed}); released {n} lease(s)")
     else:
-        if problem := question_problem(args):
+        if problem := real_world_problem(args):
             print(f"[supervisor] {problem}")
             return 2
         if problem := model_problem(args.model):
@@ -447,7 +459,7 @@ async def launch(args: argparse.Namespace) -> UUID:
     without printing, for a caller whose output is not a terminal, such as
     the MCP server. A problem with the question or the model raises
     ValueError before any session is created."""
-    if problem := question_problem(args) or model_problem(args.model):
+    if problem := real_world_problem(args) or model_problem(args.model):
         raise ValueError(problem)
     engine = make_engine()
     try:
@@ -474,24 +486,32 @@ def time_limit(max_seconds: float | None, model: str) -> float:
     return REAL_MAX_SECONDS if model != FAKE else MAX_SECONDS
 
 
-def question_problem(args: argparse.Namespace) -> str | None:
-    """Why a run with --question can't start, or None when it can."""
-    if not args.question:
+def real_world_problem(args: argparse.Namespace) -> str | None:
+    """Why a run on the real web (--question) or on a real repository (--repo)
+    can't start, or None when it can, or when it runs in a mock world."""
+    domain = get_domain(args.domain)
+    for flag, given, allowed in (
+        ("--question", args.question, domain.real_web),
+        ("--repo", args.repo, domain.real_repo),
+    ):
+        if given and not allowed:
+            return f"{args.domain} doesn't run that way, so it takes no {flag}"
+    if world_kind(args) == "mock":
         return None
-    if not get_domain(args.domain).real_web:
-        return f"{args.domain} only runs in its mock world, so it takes no --question"
     if args.model == FAKE:
         return (
-            "the fake model can only read the mock web, so --question needs a real model "
+            "the fake model only works in a mock world, so --question and --repo need a real model "
             "(set ANTHROPIC_API_KEY, or pass --model with a real model's name)"
         )
+    if args.repo and "{item}" not in shlex.split(args.check or ""):
+        return "--repo needs --check, the command that must pass, with {item} as a word where one item goes"
     return None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = _parser().parse_args(argv)
     if args.domain is None:
-        args.domain = "research" if args.question else "audit"
+        args.domain = "research" if args.question else "code" if args.repo else "audit"
     if args.hosts is None:
         args.hosts = DOMAINS[args.domain].default_size
     args.model = resolve_model(args.model)
@@ -510,6 +530,12 @@ def _parser() -> argparse.ArgumentParser:
         "--question",
         help="research this question on the real web, with a real model (the domain is then research)",
     )
+    p.add_argument("--repo", help="work on this git repository with a real model (the domain is then code)")
+    p.add_argument(
+        "--check",
+        help="with --repo, the command that must pass, with {item} where one failing test or file goes",
+    )
+    p.add_argument("--allow-test-edits", action="store_true", help="with --repo, let fixes change tests too")
     p.add_argument("--seed", type=int, default=42, help="fixes the world and the faults")
     p.add_argument(
         "--hosts", "--size", type=int, help="size of the world (hosts, sources), with a default per domain"

@@ -2,6 +2,7 @@
 
     lha research "question"            research a question on the real web (needs a real model)
     lha research "question" --detach   the same in the background, printing the session id
+    lha code REPO --check "..."        make a check pass on a git repository (needs a real model)
     lha start [options]                any run, with the options of python -m lha.run
     lha list                           the latest runs
     lha status [SESSION]               how a run is doing (default: the latest)
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 PROBE_TIMEOUT_SECONDS = 5.0
+WORLDS = {"mock": "a mock world", "web": "the real web", "repo": "a real repository"}
 
 
 def load_env(path: Path = Path(".env")) -> None:
@@ -82,6 +84,10 @@ def _research(args: argparse.Namespace, rest: list[str]) -> int:
     return _run(["--question", args.question, *rest])
 
 
+def _code(args: argparse.Namespace, rest: list[str]) -> int:
+    return _run(["--repo", args.repo, *rest])
+
+
 def _start(args: argparse.Namespace, rest: list[str]) -> int:
     return _run(rest)
 
@@ -106,7 +112,7 @@ def _list(args: argparse.Namespace, rest: list[str]) -> int:
     if args.json:
         print(json.dumps(rows, indent=2))
     for r in [] if args.json else rows:
-        where = "the real web" if r["world"] == "web" else "a mock world"
+        where = WORLDS.get(r["world"], r["world"])
         print(f"{r['session_id']}  {r['status']:9}  {r['started_at'][:19]}  {r['domain']} on {where}")
         print(f"    {_short(r['goal'])}")
     if not rows and not args.json:
@@ -124,7 +130,7 @@ def _status(args: argparse.Namespace, rest: list[str]) -> int:
     if args.json:
         print(json.dumps(s, indent=2))
         return 0
-    where = "the real web" if s["world"] == "web" else "a mock world"
+    where = WORLDS.get(s["world"], s["world"])
     print(f"session {s['session_id']}: {s['domain']} on {where}, model {s['model']}")
     print(f"goal: {_short(s['goal'], 300)}")
     minutes, seconds = divmod(s["elapsed_seconds"], 60)
@@ -218,6 +224,9 @@ def _parser() -> argparse.ArgumentParser:
     command(
         "research", _research, "research a question on the real web, with a real model", True
     ).add_argument("question")
+    command("code", _code, "make a check pass on a git repository, with a real model", True).add_argument(
+        "repo"
+    )
     command("start", _start, "start any run", True)
     command("resume", _resume, "continue an unfinished run", True).add_argument("session", nargs="?")
     c = command("list", _list, "the latest runs")

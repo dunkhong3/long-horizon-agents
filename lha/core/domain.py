@@ -5,8 +5,9 @@ the context packet builder, the worker process, retries, splits, the circuit
 breaker, stall detection and the supervisor) knows nothing about networks or
 documents. A domain supplies the rest, which is its mock world, its task
 types with their schemas, roles and agents, its tools, and the rules the
-coordinator follows for its results. Two domains live in lha/domains, the
-replica audit and verified research, and they share every line of the core.
+coordinator follows for its results. Three domains live in lha/domains, the
+replica audit, verified research and code work, and they share every line of
+the core.
 """
 
 import hashlib
@@ -70,8 +71,10 @@ class Domain:
     goals: dict[str, str]  # goal kind -> goal text, with {start} for the starting points
     done: dict[str, str]  # goal kind -> what the coordinator says when the goal is met
     # Whether it can also run on the real web, with a question of its own
-    # instead of a mock world, which needs a real model (see --question).
+    # instead of a mock world, or on a real repository, which both need a
+    # real model (see --question and --repo).
     real_web: bool = False
+    real_repo: bool = False
 
     # --- the world ----------------------------------------------------------
 
@@ -81,6 +84,16 @@ class Domain:
     def create_app(self, world: Any, fault_rate: float) -> FastAPI:
         raise NotImplementedError
 
+    def world_process(self, session: Row) -> bool:
+        """Whether the session's tools call a mock world served as a process of
+        its own, which the supervisor then starts."""
+        return session.world == "mock"
+
+    def prepare(self, session_id: UUID, world: Any, args: Any) -> dict[str, Any]:
+        """Set up whatever a new session needs outside Postgres, such as a git
+        workspace, and return the parameters kept on the session."""
+        return {}
+
     def tools(
         self,
         http: httpx.AsyncClient,
@@ -88,9 +101,9 @@ class Domain:
         attempt: int,
         log: EventLogger,
         load: PointerLoader,
-        world: str = "mock",
+        session: Row,
     ) -> ToolBox:
-        """The tools of one attempt, on the mock world or, for world 'web', on the real web."""
+        """The tools of one attempt, in the session's world."""
         return ToolBox(http, task_key, attempt, log, load)
 
     # --- tasks ----------------------------------------------------------------

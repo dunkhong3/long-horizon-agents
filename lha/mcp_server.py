@@ -32,10 +32,13 @@ from lha.domains.research import RESEARCH
 from lha.run import detach, launch, parse_args
 
 INSTRUCTIONS = """\
-lha researches a question on the real web over minutes or hours, and every
-answer in its report is a value that two or more independent sites state,
-each quoted word for word from the page it came from. Start a run with
-start_research, which returns at once, then check it now and then with
+lha runs long tasks in the background. It researches a question on the real
+web, where every answer in its report is a value that two or more
+independent sites state, each quoted word for word from the page it came
+from, or it makes a check such as a test suite pass on a git repository, on
+a branch of its own, where every commit is a fix that passed its check.
+Start a run with start_research or start_code_task, which return at once,
+then check it now and then with
 run_status, which also says what it has spent, and read the result with
 run_report once its status is no longer 'running'. A run whose supervisor
 stopped, for example because its machine restarted, goes on from where it
@@ -57,6 +60,30 @@ async def start_research(
     most max_pages pages. Follow it with run_status and read it with run_report.
     """
     args = parse_args(["--question", question, "--budget", str(budget_usd), "--size", str(max_pages)])
+    try:
+        sid = await launch(args)
+    except ValueError as e:
+        raise ToolError(str(e)) from None
+    except (OSError, SQLAlchemyError) as e:
+        raise ToolError(_database_hint(e)) from None
+    return {"session_id": str(sid), "status": "running", "log": f"runs/{sid}/run.log"}
+
+
+@server.tool()
+async def start_code_task(
+    repo: str, check: str, budget_usd: float = DEFAULT_BUDGET_USD, allow_test_edits: bool = False
+) -> dict[str, Any]:
+    """Make a check pass on a git repository, in the background, on a branch of its own.
+
+    The check is a command with {item} as one of its words, where one failing
+    item goes, such as 'uv run pytest -q {item}'. Every fix is committed only
+    once that item's check has passed with exactly that fix, the tests are left
+    alone unless allow_test_edits is true, and the repository's own folder and
+    branches are never touched, so the result is a branch to review. It answers
+    at once with the session id, and run_report names the branch once it is done.
+    """
+    argv = ["--repo", repo, "--check", check, "--budget", str(budget_usd)]
+    args = parse_args(argv + (["--allow-test-edits"] if allow_test_edits else []))
     try:
         sid = await launch(args)
     except ValueError as e:

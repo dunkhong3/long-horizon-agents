@@ -71,7 +71,16 @@ async def test_the_mcp_server_starts_follows_and_reads_runs(engine):
     sid = await new_session(engine, domain="research", goal="Find the license of Atlas.")
     async with Client(mcp_server.server) as client:
         names = {t.name for t in (await client.list_tools()).tools}
-        assert names == {"start_research", "run_status", "run_report", "list_runs", "continue_run"}
+        assert names == {
+            "start_research",
+            "start_code_task",
+            "run_status",
+            "run_report",
+            "list_runs",
+            "continue_run",
+        }
+        code = await client.call_tool("start_code_task", {"repo": ".", "check": "uv run pytest -q {item}"})
+        assert code.is_error and "real model" in code.content[0].text
         # The fake model can't read the real web, so nothing starts and nothing is spent.
         refused = await client.call_tool("start_research", {"question": "Who maintains Atlas?"})
         assert refused.is_error and "real model" in refused.content[0].text

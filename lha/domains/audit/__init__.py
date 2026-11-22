@@ -85,7 +85,7 @@ class AuditDomain(Domain):
     def create_app(self, world: World, fault_rate: float) -> FastAPI:
         return create_app(world, fault_rate)
 
-    def tools(self, http, task_key, attempt, log, load, world="mock") -> AuditTools:
+    def tools(self, http, task_key, attempt, log, load, session) -> AuditTools:
         return AuditTools(http, task_key, attempt, log, load)
 
     def start(self, world: World) -> list[str]:

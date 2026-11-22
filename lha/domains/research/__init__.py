@@ -86,8 +86,8 @@ class ResearchDomain(Domain):
     def create_app(self, world: MockWeb, fault_rate: float) -> FastAPI:
         return create_app(world, fault_rate)
 
-    def tools(self, http, task_key, attempt, log, load, world="mock") -> ResearchTools:
-        return ResearchTools(http, task_key, attempt, log, load, world=world)
+    def tools(self, http, task_key, attempt, log, load, session) -> ResearchTools:
+        return ResearchTools(http, task_key, attempt, log, load, world=session.world)
 
     def start(self, world: MockWeb | None) -> list[str]:
         return []  # nothing is known at the start, and the planner's searches find the pages

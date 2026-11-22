@@ -57,6 +57,13 @@ def test_research_passes():
     assert "answered all 8 value(s) asked about" in result.stdout
 
 
+def test_code_passes():
+    """Code work on the mock repository, the third domain on the same core."""
+    result = run("--domain", "code", "--seed", "4", "--goal", "all", "--chaos", "0.3")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "the check passes on the branch" in result.stdout and "no test was changed" in result.stdout
+
+
 def test_crash_then_resume_passes():
     crashed = run("--seed", "103", "--kill-at", "100")
     assert crashed.returncode == 137, crashed.stdout + crashed.stderr

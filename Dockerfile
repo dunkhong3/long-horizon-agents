@@ -4,6 +4,8 @@
 FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:0.8 /uv /bin/uv
 WORKDIR /app
+# git, for the code domain's workspaces
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1 PYTHONUNBUFFERED=1
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --extra models --no-install-project

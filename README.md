@@ -29,7 +29,7 @@ report: "cache on host-4 runs 1 replica; the registry expects 3"
 
 The agents start knowing only `host-1`, `host-2` and `host-3`, and the example is simplified. A real run has 20 hosts, between about 65 and 90 services, 3 decoys (healthy services whose first read is stale, so they look broken until they are read again) and a dead reference, which is a document that names a host that doesn't exist. One host runs 40 services, too many to read in one attempt's context, so its work has to be split, and another is down for the first round of work, so its circuit breaker opens and a later round has to bring it back. The default goal plants one drift 5–6 document hops away from the start (`lha/domains/audit/world.py`, lines 101–119), and `--goal all` plants three and only ends once every host has been explored and every service has a verdict. A run takes roughly 250–500 steps at the default fault rate, about 470–530 when finding all drifts, and up to about 660 at a 45% fault rate, and timeouts, 500 errors, empty responses and made-up model output all happen along the way, plus crashes of workers and of the coordinator with `--crashes`, and a crash of every process with `--kill-at`. Every run is scored against the planted answer as PASS or FAIL (`lha/core/scoring.py`, lines 31–49).
 
-The audit is one domain, and the core that keeps the run coherent knows nothing about it. A second domain, verified research, runs on the same core and answers a question by planning what to find, searching, reading pages and checking every quote against the page it came from, where a value only counts once two or more independent sites agree on it and outnumber every other value, and a word-for-word copy on another site doesn't count twice. On the fake model it researches a mock web whose answers are known, so every run is scored, and on a real model `just research "your question"` researches the real web with the provider's own search and writes a report in which every answer lists the pages and sentences behind it ('Verified research' in [docs/design.md](docs/design.md); `lha/domains/research/`).
+The audit is one domain, and the core that keeps the run coherent knows nothing about it. A second domain, verified research, runs on the same core and answers a question by planning what to find, searching, reading pages and checking every quote against the page it came from, where a value only counts once two or more independent sites agree on it and outnumber every other value, and a word-for-word copy on another site doesn't count twice. On the fake model it researches a mock web whose answers are known, so every run is scored, and on a real model `just research "your question"` researches the real web with the provider's own search and writes a report in which every answer lists the pages and sentences behind it ('Verified research' in [docs/design.md](docs/design.md); `lha/domains/research/`). A third domain, code work, makes a check such as a test suite pass on a git repository, one failing item at a time, on a branch of its own, where every commit is a fix whose item passed its check with exactly that fix before it was committed, and the tests are left alone. On the fake model it fixes a mock repository with planted bugs, one of them in a helper that other modules use, and on a real model `lha code <repo> --check "uv run pytest -q {item}"` works on a real repository and leaves a branch to review ('Code work on a repository' in [docs/design.md](docs/design.md); `lha/domains/code/`).
 
 ## How it is built
 
@@ -80,6 +80,7 @@ just scale                            # one big world with more workers and coor
 just dashboard                        # a live view of every run, on http://localhost:8000
 just start --domain research --goal all  # the second domain, verified research on a mock web
 just research "your question"         # verified research on the real web, which needs a real model
+just start --domain code --goal all   # the third domain, code work on a mock repository
 just start --seed 7 --hosts 200 --goal all --step-budget 50000 --coordinators 4 --workers 8,8
 ```
 
@@ -93,13 +94,14 @@ Everything above runs on the fake model and costs nothing. To use a real model, 
 
 ```bash
 uv run lha research "your question" --detach   # research in the background (a real model)
+uv run lha code . --check "uv run pytest -q {item}" --detach   # make the tests pass on a branch
 uv run lha status                               # how the latest run is doing, and what it has spent
 uv run lha report                               # what it found, with the pages and sentences behind it
 uv run lha list                                 # the latest runs
 uv run lha resume                               # continue the latest unfinished run
 ```
 
-An assistant such as Claude Code can hand research to the system by itself, through an MCP server, which is a process that offers tools to an assistant over the Model Context Protocol (`lha/mcp_server.py`). Once it is added with the command below, run in this folder, every Claude Code session can start research, check on it and read the report, while the key and the database come from this folder's `.env`.
+An assistant such as Claude Code can hand research to the system by itself, through an MCP server, which is a process that offers tools to an assistant over the Model Context Protocol (`lha/mcp_server.py`). Once it is added with the command below, run in this folder, every Claude Code session can start research or code work, check on it and read the report, while the key and the database come from this folder's `.env`.
 
 ```bash
 uv sync --extra mcp --extra models
