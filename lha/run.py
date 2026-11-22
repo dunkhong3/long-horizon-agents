@@ -501,7 +501,7 @@ def real_world_problem(args: argparse.Namespace) -> str | None:
         return None
     if args.model == FAKE:
         return (
-            "the fake model only works in a mock world, so --question and --repo need a real model "
+            "the fake model only works in a mock world, so --question, --repo and --docs need a real model "
             "(set ANTHROPIC_API_KEY, or pass --model with a real model's name)"
         )
     if args.repo and "{item}" not in shlex.split(args.check or ""):
