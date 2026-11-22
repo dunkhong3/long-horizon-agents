@@ -7,6 +7,7 @@
     python -m lha.run --seed 42 --hosts 200 --coordinators 4 --workers 16,16
     python -m lha.run --domain research --seed 42   # verified research on the mock web
     python -m lha.run --question "..."            # verified research on the real web (a real model)
+    python -m lha.run --question "..." --detach   # the same in the background (see: lha status)
     python -m lha.run --seed 42 --model anthropic:claude-sonnet-5-5  # a real model, opt-in
     python -m lha.run --seed 42 --kill-at 120   # crash everything after step 120
     python -m lha.run --resume [SESSION]        # continue an unfinished run (default: latest)
@@ -22,6 +23,7 @@ import json
 import os
 import signal
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -352,6 +354,8 @@ async def main(args: argparse.Namespace) -> int:
         if problem := model_problem(session.model):
             print(f"[supervisor] cannot resume on the model {session.model!r}: {problem}")
             return 2
+        if args.detach:
+            return _detached(sid, args)
         n = await release_leases(engine, sid)
         print(f"[supervisor] resuming session {sid} (seed {session.seed}); released {n} lease(s)")
     else:
@@ -373,6 +377,8 @@ async def main(args: argparse.Namespace) -> int:
         )
         if args.question:
             print(f"[supervisor] researching on the real web: {args.question}")
+        if args.detach:
+            return _detached(sid, args)
 
     roles = get_domain(session.domain).roles
     workers = {
@@ -380,7 +386,8 @@ async def main(args: argparse.Namespace) -> int:
         for i, role in enumerate(roles[:-1])
     }
     workers[roles[-1]] = 1
-    sup = Supervisor(engine, session, workers, deadline=time.time() + args.max_seconds, quiet=args.quiet)
+    deadline = time.time() + time_limit(args.max_seconds, session.model)
+    sup = Supervisor(engine, session, workers, deadline=deadline, quiet=args.quiet)
     await sup.start()
     outcome = "interrupted"
     try:
@@ -403,6 +410,68 @@ async def main(args: argparse.Namespace) -> int:
     await engine.dispose()
     print_score(score, sid, time.monotonic() - started)
     return 0 if score.passed else 1
+
+
+def detach(sid: UUID, args: argparse.Namespace) -> Path:
+    """Hand a session to a supervisor of its own in the background, which
+    runs it to the end the way --resume does and keeps going after this
+    process and its terminal are gone. Its output goes to run.log, and its
+    process id to pid, next to the run's other files."""
+    out_dir = Path("runs") / str(sid)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "-m", "lha.run", "--resume", str(sid)]
+    cmd += ["--workers", ",".join(map(str, args.workers))]
+    if args.max_seconds is not None:
+        cmd += ["--max-seconds", str(args.max_seconds)]
+    with open(out_dir / "run.log", "ab") as log:
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
+        )
+    (out_dir / "pid").write_text(str(proc.pid))
+    _detached_procs.append(proc)
+    return out_dir / "run.log"
+
+
+# Supervisors this process started with detach, which a long-lived process
+# such as the MCP server must reap once they exit, or they linger as zombies
+# that still look alive.
+_detached_procs: list[subprocess.Popen] = []
+
+
+def reap_detached() -> None:
+    _detached_procs[:] = [p for p in _detached_procs if p.poll() is None]
+
+
+async def launch(args: argparse.Namespace) -> UUID:
+    """Create a session and start it in the background as --detach does, but
+    without printing, for a caller whose output is not a terminal, such as
+    the MCP server. A problem with the question or the model raises
+    ValueError before any session is created."""
+    if problem := question_problem(args) or model_problem(args.model):
+        raise ValueError(problem)
+    engine = make_engine()
+    try:
+        await init_schema(engine)
+        sid = await create_session(engine, args)
+    finally:
+        await engine.dispose()
+    detach(sid, args)
+    return sid
+
+
+def _detached(sid: UUID, args: argparse.Namespace) -> int:
+    log = detach(sid, args)
+    print(f"[supervisor] session {sid} runs in the background, with its output in {log}")
+    print(f"[supervisor] follow it with: lha status {sid}, and read it with: lha report {sid}")
+    return 0
+
+
+def time_limit(max_seconds: float | None, model: str) -> float:
+    """How long a run may take, which is --max-seconds when given, and
+    otherwise longer for a real model, whose money budget usually ends it first."""
+    if max_seconds is not None:
+        return max_seconds
+    return REAL_MAX_SECONDS if model != FAKE else MAX_SECONDS
 
 
 def question_problem(args: argparse.Namespace) -> str | None:
@@ -431,8 +500,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.window = REAL_CONTEXT_WINDOW_TOKENS if real else CONTEXT_WINDOW_TOKENS
     if args.budget is None and real:
         args.budget = DEFAULT_BUDGET_USD
-    if args.max_seconds is None:
-        args.max_seconds = REAL_MAX_SECONDS if real else MAX_SECONDS
     return args
 
 
@@ -475,6 +542,11 @@ def _parser() -> argparse.ArgumentParser:
         help="continue an unfinished session (default: the latest one)",
     )  # fmt: skip
     p.add_argument("--quiet", action="store_true", help="no progress lines")
+    p.add_argument(
+        "--detach",
+        action="store_true",
+        help="run in the background and print the session id (see: lha status)",
+    )
     return p
 
 

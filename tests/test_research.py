@@ -25,7 +25,7 @@ from lha.domains.research.world import (
     generate_web,
     links_in,
 )
-from lha.run import parse_args, question_problem
+from lha.run import parse_args, question_problem, time_limit
 from tests.conftest import add_task, new_session
 
 # --- the mock web -----------------------------------------------------------------------
@@ -248,7 +248,11 @@ def test_a_question_needs_the_research_domain_and_a_real_model():
         parse_args(["--question", "Who maintains Atlas?", "--model", "fake"])
     )
     assert parse_args([]).domain == "audit"
-    assert args.max_seconds == 3 * 3600 and parse_args(["--model", "fake"]).max_seconds == 600
+    assert (
+        time_limit(None, "test") == 3 * 3600
+        and time_limit(None, "fake") == 600
+        and time_limit(5, "test") == 5
+    )
 
 
 async def test_real_pages_are_read_as_text_in_pages():

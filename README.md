@@ -87,6 +87,25 @@ Without `just`, the same run is `uv sync && uv run python -m lha.run --seed 42`,
 
 Everything above runs on the fake model and costs nothing. To use a real model, install the provider packages with `uv sync --extra models` and set `ANTHROPIC_API_KEY`, and every new run then uses Claude Sonnet under a money budget of 5 dollars, which `--budget` changes, while `--model fake` keeps the fake one and `--model` takes any other Pydantic AI model name. With docker compose, setting the key in the shell before `docker compose up` is enough, because the image already has the provider packages, and `docker compose run --rm lha --question "your question"` researches a question on the real web with nothing but Docker installed. Tests, CI and the benchmarks always use the fake model.
 
+### Handing it a long task
+
+`uv run lha` is a small command over the same runs, which starts them, follows them and prints what they found, and it reads `.env` the way `just` does ('The lha command and the MCP server' in [docs/design.md](docs/design.md); `lha/cli.py`). With a provider key set, `lha research "your question" --detach` starts research on the real web in the background and prints its session id, so the terminal can be closed while it runs, `lha status` shows how the latest run is doing and what it has spent, and `lha report` prints its report once it is done. A run whose supervisor stopped, for example because the machine restarted, keeps all its state in Postgres, and `lha resume` goes on from where it was.
+
+```bash
+uv run lha research "your question" --detach   # research in the background (a real model)
+uv run lha status                               # how the latest run is doing, and what it has spent
+uv run lha report                               # what it found, with the pages and sentences behind it
+uv run lha list                                 # the latest runs
+uv run lha resume                               # continue the latest unfinished run
+```
+
+An assistant such as Claude Code can hand research to the system by itself, through an MCP server, which is a process that offers tools to an assistant over the Model Context Protocol (`lha/mcp_server.py`). Once it is added with the command below, run in this folder, every Claude Code session can start research, check on it and read the report, while the key and the database come from this folder's `.env`.
+
+```bash
+uv sync --extra mcp --extra models
+claude mcp add --scope user lha -- uv run --directory "$PWD" --extra mcp --extra models lha mcp
+```
+
 ## Sample output
 
 ```

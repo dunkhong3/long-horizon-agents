@@ -139,11 +139,11 @@ async def _recent_decisions(conn, sid: UUID) -> list[dict[str, Any]]:
 PAGE = (Path(__file__).parent / "dashboard.html").read_text()  # the page, which asks for /api/...
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="a live, read-only view of the runs in Postgres")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
-    args = p.parse_args()
+    args = p.parse_args(argv)
     uvicorn.run(create_app(make_engine()), host=args.host, port=args.port, log_level="warning")
 
 
