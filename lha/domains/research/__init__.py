@@ -86,8 +86,13 @@ class ResearchDomain(Domain):
     def create_app(self, world: MockWeb, fault_rate: float) -> FastAPI:
         return create_app(world, fault_rate)
 
+    def prepare(self, session_id: UUID, world: MockWeb | None, args: Any) -> dict[str, Any]:
+        """On the real web, how its pages are read (--fetch), which a resumed run keeps."""
+        return {"fetch": args.fetch} if args.question else {}
+
     def tools(self, http, task_key, attempt, log, load, session) -> ResearchTools:
-        return ResearchTools(http, task_key, attempt, log, load, world=session.world)
+        fetch = (session.params or {}).get("fetch", "direct")
+        return ResearchTools(http, task_key, attempt, log, load, world=session.world, fetch=fetch)
 
     def start(self, world: MockWeb | None) -> list[str]:
         return []  # nothing is known at the start, and the planner's searches find the pages

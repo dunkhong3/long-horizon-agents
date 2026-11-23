@@ -60,6 +60,7 @@ DEFAULT_WORKERS = 2
 TICK_SECONDS = 0.05
 STOP_GRACE_SECONDS = 3.0  # time for workers to exit by themselves after a finished run
 PROGRESS_EVERY_SECONDS = 2.0
+FETCH_MODES = ("direct", "provider")  # how real pages are read (--fetch)
 
 
 class WorldProcess:
@@ -504,6 +505,10 @@ def real_world_problem(args: argparse.Namespace) -> str | None:
             "the fake model only works in a mock world, so --question, --repo and --docs need a real model "
             "(set ANTHROPIC_API_KEY, or pass --model with a real model's name)"
         )
+    if args.question and args.fetch not in FETCH_MODES:
+        return f"--fetch (or LHA_FETCH) is 'direct' or 'provider', and not {args.fetch!r}"
+    if args.question and args.fetch == "provider" and not os.environ.get("ANTHROPIC_API_KEY"):
+        return "--fetch provider has the model provider fetch every page, so it needs ANTHROPIC_API_KEY"
     if args.repo and "{item}" not in shlex.split(args.check or ""):
         return "--repo needs --check, the command that must pass, with {item} as a word where one item goes"
     if args.docs and not (args.fields or "").strip(" ;"):
@@ -547,6 +552,11 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--fields", help="with --docs, the fields to find, as 'name; name: what its value looks like'"
     )
+    p.add_argument(
+        "--fetch", choices=FETCH_MODES, default=os.environ.get("LHA_FETCH", "direct"),
+        help="with --question, read pages with httpx ('direct', the default) or through the model "
+        "provider's web fetch ('provider'), for a machine that reaches the model's API but not the open web",
+    )  # fmt: skip
     p.add_argument("--seed", type=int, default=42, help="fixes the world and the faults")
     p.add_argument(
         "--hosts", "--size", type=int, help="size of the world (hosts, sources), with a default per domain"

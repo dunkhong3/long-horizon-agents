@@ -80,6 +80,7 @@ class ToolBox:
         self.log = log
         self.load = load
         self.call_no = 0
+        self.spent = 0.0  # what calls cost since the last one was logged, for a tool that pays
 
     async def fetch_pointer(self, event_id: str) -> dict[str, Any]:
         """Fetch an earlier attempt's raw output by its pointer, instead of calling the network.
@@ -106,18 +107,25 @@ class ToolBox:
             try:
                 data = await self._request(path, call_no, required)
             except ToolFailure as failure:
-                await self.log("tool_call", {**record, "ok": False, "error": failure.kind})
+                await self.log("tool_call", {**record, **self._paid(), "ok": False, "error": failure.kind})
                 if failure.permanent:
                     raise
                 last_failure = failure
                 await asyncio.sleep(TOOL_RETRY_DELAY_SECONDS)
                 continue
-            event_id = await self.log("tool_call", {**record, "ok": True, "response": data})
+            event_id = await self.log("tool_call", {**record, **self._paid(), "ok": True, "response": data})
             # The model gets the event id along with the data, so the facts
             # it reports can cite their source.
             return {**data, "event_id": str(event_id)}
         assert last_failure is not None
         raise last_failure
+
+    def _paid(self) -> dict[str, float]:
+        """What a call cost, for a tool that pays for its calls, such as a page
+        fetched through the model provider (lha/domains/research/fetch.py), so
+        the cost is logged with the call and the money budget counts it."""
+        spent, self.spent = self.spent, 0.0
+        return {"cost_usd": spent} if spent else {}
 
     async def _request(self, path: str, call_no: int, required: tuple[str, ...]) -> dict[str, Any]:
         headers = {

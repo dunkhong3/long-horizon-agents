@@ -1,18 +1,23 @@
 """Verified research, on its mock web and on the real web's reading path, offline."""
 
+import json
+from types import SimpleNamespace
+
 import httpx
 import pytest
 from pydantic_ai.messages import NativeToolReturnPart
 from sqlalchemy import select
 
+from lha.config import FETCH_MODEL
 from lha.core.agent import native_call
 from lha.core.coordinator import Coordinator
 from lha.core.domain import Rejected
-from lha.core.tools import NotFound
+from lha.core.tools import NotFound, ToolFailure
 from lha.db import crud
 from lha.db.models import tasks
 from lha.domains.research import RESEARCH, rules
 from lha.domains.research import facts as F
+from lha.domains.research.fetch import TOOL, Fetcher, cost, page_of
 from lha.domains.research.tasks import ReadInput, ReadOutput, SearchInput, SearchOutput
 from lha.domains.research.tools import ResearchTools, Unreadable
 from lha.domains.research.web import MAX_BYTES, html_to_text, paginate
@@ -284,3 +289,119 @@ async def test_real_pages_are_read_as_text_in_pages():
         await tools.fetch_page("https://site.example/huge.txt")  # read only up to MAX_BYTES
         assert sum(len(p) for p in tools.documents["https://site.example/huge.txt"][1]) <= MAX_BYTES
     assert [e["ok"] for e in events] == [True, True, False, False, True]
+
+
+async def test_pages_fetched_by_the_provider_are_read_the_same_way_and_their_cost_is_logged():
+    responses = {
+        "https://site.example/atlas": _fetched("Atlas", "Atlas is fast. " * 600),
+        "https://site.example/paper.pdf": _fetched("Paper", "JVBERi0x", "base64", "application/pdf"),
+        "https://site.example/gone": _fetch_error("url_not_accessible"),
+        "https://site.example/busy": _fetch_error("too_many_requests"),
+        "https://site.example/private": _fetch_error("url_not_allowed"),
+        "https://site.example/ignored": _response([]),  # the model never called the tool
+    }
+
+    class Provider:
+        async def fetch(self, url):
+            return responses[url]
+
+    events = []
+
+    async def log(kind, payload):
+        events.append(payload)
+        return "e"
+
+    tools = ResearchTools(None, "read_page:x", 1, log, world="web", fetch="provider")
+    tools.fetcher = Provider()
+    first = await tools.fetch_page("https://site.example/atlas")
+    assert first["title"] == "Atlas" and first["pages"] > 1 and "Atlas is fast." in first["text"]
+    assert (await tools.fetch_page("https://site.example/atlas", 1))["page"] == 1  # fetched once
+    for url, failure in (
+        ("paper.pdf", Unreadable),
+        ("gone", NotFound),
+        ("busy", ToolFailure),  # a rate limit, which may pass with another try
+        ("private", Unreadable),
+        ("ignored", ToolFailure),
+    ):
+        with pytest.raises(failure) as caught:
+            await tools.fetch_page(f"https://site.example/{url}")
+        assert caught.value.permanent == (failure is not ToolFailure)
+    # Every call that fetched is paid for, the short-lived failures three times
+    # each, and the second page of a document is served without a new fetch.
+    assert [e["ok"] for e in events] == [True, True] + [False] * 9
+    assert "cost_usd" not in events[1]
+    assert sum(e.get("cost_usd", 0) for e in events) == pytest.approx(10 * (10_000 * 0.10 + 20 * 0.50) / 1e6)
+
+
+def test_pages_fetched_by_the_provider_need_its_key(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    argv = ["--question", "Who maintains Atlas?", "--model", "test", "--fetch", "provider"]
+    assert "ANTHROPIC_API_KEY" in real_world_problem(parse_args(argv))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    args = parse_args(argv)
+    assert real_world_problem(args) is None and RESEARCH.prepare(None, None, args) == {"fetch": "provider"}
+    monkeypatch.setenv("LHA_FETCH", "provider")  # which sets the default
+    assert parse_args(["--question", "Who maintains Atlas?", "--model", "test"]).fetch == "provider"
+    assert RESEARCH.prepare(None, None, parse_args(["--domain", "research"])) == {}  # the mock web
+    monkeypatch.setenv("LHA_FETCH", "browser")
+    assert "LHA_FETCH" in real_world_problem(
+        parse_args(["--question", "Who maintains Atlas?", "--model", "test"])
+    )
+
+
+async def test_the_providers_client_asks_for_one_fetch_and_its_result_is_read(monkeypatch):
+    anthropic = pytest.importorskip("anthropic")  # the optional models extra, which CI leaves out
+    httpx2 = pytest.importorskip("httpx2")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    document = {"type": "document", "title": "Atlas",
+                "source": {"type": "text", "media_type": "text/plain", "data": "Atlas is fast."}}  # fmt: skip
+    message = {
+        "id": "msg_1", "type": "message", "role": "assistant", "model": FETCH_MODEL,
+        "content": [
+            {"type": "server_tool_use", "id": "t1", "name": "web_fetch", "input": {"url": "https://a.example"}},
+            {"type": "web_fetch_tool_result", "tool_use_id": "t1",
+             "content": {"type": "web_fetch_result", "url": "https://a.example", "content": document}},
+            {"type": "text", "text": "done"},
+        ],
+        "stop_reason": "end_turn", "stop_sequence": None, "usage": {"input_tokens": 1200, "output_tokens": 5},
+    }  # fmt: skip
+    sent = []
+
+    def serve(request):
+        sent.append(json.loads(request.content))
+        if "busy" in sent[-1]["messages"][0]["content"]:
+            return httpx2.Response(
+                429, json={"type": "error", "error": {"type": "rate_limit_error", "message": ""}}
+            )
+        return httpx2.Response(200, json=message)
+
+    provider = Fetcher()
+    http = httpx2.AsyncClient(transport=httpx2.MockTransport(serve))
+    provider.client = anthropic.AsyncAnthropic(max_retries=0, http_client=http)
+    response = await provider.fetch("https://a.example")
+    assert page_of("https://a.example", response) == ("Atlas", "Atlas is fast.")
+    assert cost(response.usage) == pytest.approx((1200 * 0.10 + 5 * 0.50) / 1e6)
+    assert sent[0]["model"] == FETCH_MODEL and sent[0]["tools"] == [TOOL]
+    assert sent[0]["messages"] == [{"role": "user", "content": "Fetch https://a.example"}]
+    with pytest.raises(ToolFailure, match="rate_limited"):
+        await provider.fetch("https://a.example/busy")
+
+
+def _fetched(title, text, source="text", media_type="text/plain"):
+    document = SimpleNamespace(
+        title=title, source=SimpleNamespace(type=source, media_type=media_type, data=text)
+    )
+    result = SimpleNamespace(type="web_fetch_result", url="", content=document)
+    return _response([SimpleNamespace(type="web_fetch_tool_result", content=result)])
+
+
+def _fetch_error(code):
+    error = SimpleNamespace(type="web_fetch_tool_result_error", error_code=code)
+    return _response([SimpleNamespace(type="web_fetch_tool_result", content=error)])
+
+
+def _response(blocks):
+    """An API response as the provider's client returns it, with the parts around the fetch."""
+    content = [SimpleNamespace(type="server_tool_use"), *blocks, SimpleNamespace(type="text")]
+    usage = SimpleNamespace(input_tokens=10_000, output_tokens=20)
+    return SimpleNamespace(content=content, stop_reason="end_turn", usage=usage)

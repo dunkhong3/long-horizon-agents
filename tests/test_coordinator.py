@@ -217,7 +217,11 @@ async def test_a_spent_money_budget_ends_the_run_with_a_partial_report(engine):
         await crud.log_event(conn, sid, "w", "model_call", {"final": True, "cost_usd": 0.03})
         assert not await coord._check_goal_and_budget(conn)
         assert (await task_row(conn, sid, "discover_host:host-1")).status == "ready"  # still under budget
-        await crud.log_event(conn, sid, "w", "model_call", {"final": True, "cost_usd": 0.03})
+        # A tool that pays for a model of its own, such as a page fetched
+        # through the model provider, counts towards the budget too.
+        await crud.log_event(
+            conn, sid, "w", "tool_call", {"tool": "fetch_page", "ok": True, "cost_usd": 0.03}
+        )
         await coord._check_goal_and_budget(conn)
         assert (await task_row(conn, sid, "discover_host:host-1")).status == "cancelled"
         report = await task_row(conn, sid, "write_report")

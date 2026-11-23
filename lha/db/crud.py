@@ -59,10 +59,12 @@ async def step_count(conn: AsyncConnection, session_id: UUID) -> int:
 
 
 async def cost_usd(conn: AsyncConnection, session_id: UUID) -> float:
-    """What a session's real model calls have cost so far (the fake model costs nothing)."""
+    """What a session's real model calls have cost so far, with the tool calls
+    that pay for a model of their own, such as a page fetched through the
+    model provider (the fake model costs nothing)."""
     cost = events.c.payload["cost_usd"].as_float()
     q = select(func.coalesce(func.sum(cost), 0.0)).where(
-        events.c.session_id == session_id, events.c.kind == "model_call"
+        events.c.session_id == session_id, events.c.kind.in_(("model_call", "tool_call"))
     )
     return float((await conn.execute(q)).scalar_one())
 

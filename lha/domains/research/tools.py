@@ -3,7 +3,8 @@
 On the mock web both tools are HTTP calls to the mock world, with its seeded
 faults. On the real web a real model searches with its provider's own web
 search (see agents.py), and fetch_page reads the real page with httpx and
-turns it into text (see web.py), with each document read once per attempt
+turns it into text (see web.py), or with --fetch provider has the model
+provider fetch it (see fetch.py), with each document read once per attempt
 and served in pages.
 """
 
@@ -13,6 +14,7 @@ from urllib.parse import quote
 import httpx
 
 from lha.core.tools import NotFound, ToolBox, ToolFailure, Unreadable
+from lha.domains.research.fetch import cost, fetcher, page_of
 from lha.domains.research.tasks import page_path
 from lha.domains.research.web import (
     FETCH_TIMEOUT_SECONDS,
@@ -27,9 +29,11 @@ PAGE_FIELDS = ("url", "title", "page", "pages", "text")
 
 
 class ResearchTools(ToolBox):
-    def __init__(self, *args: Any, world: str = "mock", **kwargs: Any):
+    def __init__(self, *args: Any, world: str = "mock", fetch: str = "direct", **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.world = world
+        self.fetch_mode = fetch  # how a real page is read, with httpx or through the model provider
+        self.fetcher: Any = None  # the provider's client, for --fetch provider
         self.documents: dict[str, tuple[str, list[str]]] = {}  # url -> (title, pages), real web only
 
     async def web_search(self, query: str) -> dict[str, Any]:
@@ -44,7 +48,8 @@ class ResearchTools(ToolBox):
             return await super()._request(path, call_no, required)
         url, _, page = path.rpartition("#page=")
         if url not in self.documents:
-            self.documents[url] = await self._download(url)
+            read = self._fetch if self.fetch_mode == "provider" else self._download
+            self.documents[url] = await read(url)
         title, pages = self.documents[url]
         n = int(page)
         if not 0 <= n < len(pages):
@@ -76,6 +81,15 @@ class ResearchTools(ToolBox):
         title, text = html_to_text(body, final_url) if kind != "text/plain" else ("", body)
         if not text.strip():
             raise Unreadable("no text")
+        return title, paginate(text)
+
+    async def _fetch(self, url: str) -> tuple[str, list[str]]:
+        """A real page fetched by the model provider's own web fetch (see
+        fetch.py), whose cost is logged with this call, even when it fails."""
+        self.fetcher = self.fetcher or fetcher()
+        response = await self.fetcher.fetch(url)
+        self.spent += cost(response.usage)
+        title, text = page_of(url, response)
         return title, paginate(text)
 
 

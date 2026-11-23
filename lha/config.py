@@ -48,6 +48,14 @@ DEFAULT_BUDGET_USD = 5.0  # what a run on a real model may spend, unless --budge
 # US dollars per million input and output tokens for a model Pydantic AI's
 # price list doesn't know, set high on purpose so the budget still holds.
 FALLBACK_PRICE_PER_MILLION = (15.0, 75.0)
+# Real pages read through the model provider's own web fetch (--fetch provider),
+# for a machine that can reach the model's API but not the open web. A small
+# model asks for one page, and the page's text is what it costs, because it
+# counts as tokens the model reads, at this model's price for prompts under
+# 100K tokens, which FETCH_MAX_TOKENS keeps every fetch below.
+FETCH_MODEL = "claude-haiku-5-5"
+FETCH_PRICE_PER_MILLION = (0.10, 0.50)  # US dollars per million input and output tokens
+FETCH_MAX_TOKENS = 25_000  # the most of one page's text that is fetched, about 100 kB
 
 # Runs.
 DEFAULT_HOSTS = 20
