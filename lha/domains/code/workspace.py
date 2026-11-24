@@ -202,7 +202,9 @@ def list_files(work: Path) -> list[str]:
 
 
 def _check_env(scratch: Path) -> dict[str, str]:
-    env = dict(os.environ)
+    # A check runs code a model wrote, so it never sees a provider's key,
+    # such as the ANTHROPIC_API_KEY the session's own model calls use.
+    env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
     env.pop("VIRTUAL_ENV", None)  # a check finds its own environment, as it would in a fresh checkout
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["COLUMNS"] = "200"  # wide, so a failure's message is never cut short (_tail drops the padding)

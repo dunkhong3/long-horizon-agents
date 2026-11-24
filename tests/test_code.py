@@ -59,6 +59,13 @@ def test_a_check_only_ever_runs_the_template_with_a_checked_item():
         ws.check_argv("pytest -q", None)  # no {item}
 
 
+def test_a_check_never_sees_a_provider_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-not-a-real-key")
+    work = _workspace(tmp_path, {"show.py": "import os\nprint(sorted(os.environ))\n"})
+    run = ws.run_check(work, ws.head(work), f"{shlex.quote(sys.executable)} {{item}}", "show.py", [])
+    assert run.passed and "PATH" in run.output and "ANTHROPIC_API_KEY" not in run.output
+
+
 def test_edits_replace_text_found_once_and_never_touch_protected_files(tmp_path):
     (tmp_path / "a.py").write_text("x = 1\ny = 1\n")
     with pytest.raises(ws.WorkspaceError, match="2 times"):
