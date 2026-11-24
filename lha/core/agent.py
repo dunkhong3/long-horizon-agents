@@ -22,6 +22,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     NativeToolReturnPart,
+    TextPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -164,6 +165,12 @@ class StepModel(WrapperModel):
             # task is too big for one attempt and the coordinator splits it.
             raise ContextOverflow(f"the attempt needs {tokens} tokens")
         response = await self.wrapped.request(messages, model_settings, model_request_parameters)
+        # A real model may give its answer as JSON text rather than through
+        # an output tool, as Claude does when it thinks before answering.
+        _, params = self.wrapped.prepare_request(model_settings, model_request_parameters)
+        text_answer = params.output_mode in ("native", "prompted") and any(
+            isinstance(part, TextPart) and part.content.strip() for part in response.parts
+        )
 
         output_tools = {t.name for t in model_request_parameters.output_tools}
         calls = [part for part in response.parts if isinstance(part, ToolCallPart)]
@@ -173,7 +180,7 @@ class StepModel(WrapperModel):
             output, corrupted = self._corrupt(final.args_as_dict())
             parts = [replace(part, args=output) if part is final else part for part in response.parts]
             response = replace(response, parts=parts)
-        if final is not None:
+        if final is not None or (text_answer and not calls):
             summary: dict[str, Any] = {"final": True}
         elif calls:
             summary = {"tool": calls[0].tool_name, "args": calls[0].args_as_dict()}

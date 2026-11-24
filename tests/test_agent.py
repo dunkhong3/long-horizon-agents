@@ -4,9 +4,13 @@ from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel
+from pydantic_ai import Agent, NativeOutput
+from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.profiles import ModelProfile
 
 from lha.config import DEFAULT_REAL_MODEL
-from lha.core.agent import AgentContext, Final, resolve_model, run_agent
+from lha.core.agent import AgentContext, Final, StepModel, resolve_model, run_agent
 from lha.core.context import ContextOverflow, estimate_tokens, pack
 from lha.core.schemas import FactView, Pinned
 from lha.run import model_problem
@@ -60,6 +64,20 @@ async def test_a_real_model_makes_its_calls_through_the_same_steps():
     kind, payload = events[-1]
     assert kind == "model_call" and payload["final"] is True and payload["corrupted"] is None
     assert set(payload["usage"]) == {"input_tokens", "output_tokens"}
+
+
+async def test_an_answer_given_as_json_text_is_logged_as_the_final_answer():
+    # A real model that thinks first answers as JSON text, which Pydantic AI
+    # calls native output, so that answer is the final one and not a stray text.
+    ctx, events = _context(model="test")
+    model = FunctionModel(
+        lambda messages, info: ModelResponse(parts=[TextPart('{"answer": 3}')]),
+        profile=ModelProfile(supports_json_schema_output=True),
+    )
+    agent = Agent(StepModel(model, ctx), output_type=NativeOutput(Out))
+    assert isinstance((await agent.run("count")).output, Out)
+    kind, payload = events[-1]
+    assert kind == "model_call" and payload.get("final") is True and "text" not in payload
 
 
 async def test_the_window_check_applies_to_every_model():
