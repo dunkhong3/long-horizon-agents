@@ -378,6 +378,9 @@ async def main(args: argparse.Namespace) -> int:
         if problem := model_problem(args.model):
             print(f"[supervisor] cannot use the model {args.model!r}: {problem}")
             return 2
+        if problem := await fetch_problem(args):
+            print(f"[supervisor] {problem}")
+            return 2
         sid = await create_session(engine, args)
         async with engine.connect() as conn:
             session = await crud.get_session(conn, sid)
@@ -460,7 +463,7 @@ async def launch(args: argparse.Namespace) -> UUID:
     without printing, for a caller whose output is not a terminal, such as
     the MCP server. A problem with the question or the model raises
     ValueError before any session is created."""
-    if problem := real_world_problem(args) or model_problem(args.model):
+    if problem := real_world_problem(args) or model_problem(args.model) or await fetch_problem(args):
         raise ValueError(problem)
     engine = make_engine()
     try:
@@ -513,6 +516,21 @@ def real_world_problem(args: argparse.Namespace) -> str | None:
         return "--repo needs --check, the command that must pass, with {item} as a word where one item goes"
     if args.docs and not (args.fields or "").strip(" ;"):
         return "--docs needs --fields, the fields to find, such as 'invoice number; total: the amount to pay'"
+    return None
+
+
+async def fetch_problem(args: argparse.Namespace) -> str | None:
+    """Why the model provider won't fetch pages for a run on the real web with
+    --fetch provider, or None when it will. Only a real Anthropic model asks
+    the provider, so tests, which never use one, make no call."""
+    if not (args.question and args.fetch == "provider" and args.model.startswith("anthropic:")):
+        return None
+    from lha.domains.research.fetch import fetcher
+
+    if message := await fetcher().refusal():
+        return (
+            f"the model provider refuses to fetch pages from here, so --fetch provider can't work: {message}"
+        )
     return None
 
 

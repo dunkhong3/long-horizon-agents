@@ -367,12 +367,17 @@ async def test_the_providers_client_asks_for_one_fetch_and_its_result_is_read(mo
     }  # fmt: skip
     sent = []
 
+    refused = {"type": "error", "error": {"type": "invalid_request_error", "message": "not from a sandbox"}}
+    refuse = False  # whether the API refuses the tool itself, as it does from a sandbox
+
     def serve(request):
         sent.append(json.loads(request.content))
         if "busy" in sent[-1]["messages"][0]["content"]:
             return httpx2.Response(
                 429, json={"type": "error", "error": {"type": "rate_limit_error", "message": ""}}
             )
+        if "sandbox" in sent[-1]["messages"][0]["content"] or (refuse and sent[-1]["max_tokens"] == 1):
+            return httpx2.Response(400, json=refused)
         return httpx2.Response(200, json=message)
 
     provider = Fetcher()
@@ -385,6 +390,15 @@ async def test_the_providers_client_asks_for_one_fetch_and_its_result_is_read(mo
     assert sent[0]["messages"] == [{"role": "user", "content": "Fetch https://a.example"}]
     with pytest.raises(ToolFailure, match="rate_limited"):
         await provider.fetch("https://a.example/busy")
+    # A refused request is the same on every try, so the page is given up.
+    with pytest.raises(Unreadable, match="http_400: not from a sandbox"):
+        await provider.fetch("https://a.example/sandbox")
+    # Before a run starts it asks once whether every fetch would be refused,
+    # in a request that may not call the tool, and answers in one token.
+    assert await provider.refusal() is None
+    assert sent[-1]["max_tokens"] == 1 and sent[-1]["tool_choice"] == {"type": "none"}
+    refuse = True
+    assert await provider.refusal() == "not from a sandbox"
 
 
 def _fetched(title, text, source="text", media_type="text/plain"):

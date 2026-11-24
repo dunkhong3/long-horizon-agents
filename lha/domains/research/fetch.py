@@ -15,7 +15,9 @@ The tool's errors are sorted the same way as the mock web's failures (see
 lha/core/tools.py), where a rate limit or a fault on the provider's side may
 pass with another try, a page the provider couldn't fetch counts as not
 found, and every other error, such as a URL that robots.txt turns away or a
-PDF, is a page that another try won't make readable.
+PDF, is a page that another try won't make readable. The API may also refuse
+the tool itself, as it does for a request from a sandbox with restricted
+network access, so a run asks once before it starts (see `refusal`).
 """
 
 from typing import Any
@@ -76,8 +78,39 @@ class Fetcher:
             raise ToolFailure("connection_error", str(e)) from None
         except api.APIStatusError as e:
             status = e.status_code
-            kind = "rate_limited" if status == 429 else "server_error" if status >= 500 else f"http_{status}"
-            raise ToolFailure(kind, e.message) from None
+            if status == 429 or status >= 500:
+                raise ToolFailure("rate_limited" if status == 429 else "server_error", e.message) from None
+            # Any other refusal of the request itself is the same on every
+            # try, so the page is given up rather than tried again.
+            raise Unreadable(f"http_{status}: {_message(e)}") from None
+
+    async def refusal(self) -> str | None:
+        """Why the API refuses every fetch from this machine, or None when it
+        doesn't, which is asked once before a run starts, so a run that could
+        read no page at all never spends anything. The request may not call
+        the tool and answers in one token, so it costs a fraction of a cent."""
+        api = self.api
+        try:
+            await self.client.messages.create(
+                model=FETCH_MODEL,
+                max_tokens=1,
+                tools=[TOOL],
+                tool_choice={"type": "none"},
+                messages=[{"role": "user", "content": "ok"}],
+            )
+        except api.APIStatusError as e:
+            if e.status_code in (400, 401, 403):
+                return _message(e)
+        except api.APIError:
+            pass  # a passing failure, which a fetch in the run may get past
+        return None
+
+
+def _message(error: Any) -> str:
+    """The API's own words for a refused request, without the status code and
+    the JSON around them."""
+    body = error.body if isinstance(error.body, dict) else {}
+    return str((body.get("error") or {}).get("message") or error.message)
 
 
 def fetcher() -> Fetcher:
