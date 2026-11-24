@@ -1,7 +1,7 @@
 """Reading real web pages through the model provider's own web fetch.
 
 This is for a machine that can reach the model's API but not the open web,
-such as a cloud container, and it is chosen with --fetch provider. Web
+and it is chosen with --fetch provider. Web
 fetch is a tool that the provider runs on its own servers, so a request to
 the API names a URL and the response holds the text of that page, which is
 what we keep. A small model makes the request (FETCH_MODEL in lha/config.py),
