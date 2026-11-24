@@ -13,6 +13,7 @@ from lha.config import DEFAULT_REAL_MODEL
 from lha.core.agent import AgentContext, Final, StepModel, resolve_model, run_agent
 from lha.core.context import ContextOverflow, estimate_tokens, pack
 from lha.core.schemas import FactView, Pinned
+from lha.domains import DOMAINS
 from lha.run import model_problem
 
 
@@ -99,3 +100,17 @@ def test_a_model_that_cannot_be_built_is_caught_before_the_run():
     assert model_problem("fake") is None
     assert model_problem("test") is None
     assert "no-such-provider" in model_problem("no-such-provider:some-model")
+
+
+def test_no_output_has_a_field_a_strict_schema_would_empty():
+    # Claude's native output uses a strict JSON schema, which turns a dict
+    # field into {}, so an answer in that field could never be given.
+    def free_form(node) -> bool:
+        if isinstance(node, dict):
+            extra = node.get("additionalProperties")
+            return isinstance(extra, dict) or extra is True or any(map(free_form, node.values()))
+        return isinstance(node, list) and any(map(free_form, node))
+
+    for domain in DOMAINS.values():
+        for name, task_type in domain.task_types.items():
+            assert not free_form(task_type.output.model_json_schema()), (domain.name, name)

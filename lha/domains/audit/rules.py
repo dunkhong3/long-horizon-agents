@@ -66,7 +66,7 @@ async def accept_discover(
             raise Rejected(f"{d.name} page {d.page}: doesn't match the response it cites")
         if not set(d.mentions) <= named:
             raise Rejected(f"{d.name}: mentions {d.mentions} not all in the document")
-        if d.name == REGISTRY_DOC and d.registry != registry_entries(r["content"]):
+        if d.name == REGISTRY_DOC and d.entries() != registry_entries(r["content"]):
             raise Rejected("registry doesn't match registry.json")
     read = {(d.name, d.page) for d in out.documents}
     expected_pages = pages_to_read(inp, host_resp["documents"], out.documents)
@@ -89,7 +89,7 @@ async def accept_discover(
         writes.append((subject, F.MENTIONS, d.mentions, UUID(d.event_id)))
         if d.page == 0:
             writes.append((subject, F.PAGES, d.pages, UUID(d.event_id)))
-        for service, expected in (d.registry or {}).items():
+        for service, expected in (d.entries() or {}).items():
             registry_found = True
             writes.append((F.registry_subject(service), F.EXPECTED, expected, UUID(d.event_id)))
     await crud.upsert_facts(conn, sid, writes, source_task_id=tid)

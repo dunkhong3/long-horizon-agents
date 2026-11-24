@@ -93,7 +93,9 @@ def discover_policy(packet: ContextPacket, results: list[tuple[str, Any]]) -> Ca
     found = []
     for (name, page), d in pages.items():
         mentions = sorted(set(HOST_NAME.findall(d["content"])) - {host})
-        registry = registry_entries(d["content"]) if name == REGISTRY_DOC else None
+        registry = None
+        if name == REGISTRY_DOC:
+            registry = [{"service": k, "replicas": n} for k, n in registry_entries(d["content"]).items()]
         found.append({"name": name, "page": page, "pages": d["pages"], "mentions": mentions,
                       "registry": registry, "event_id": d["event_id"]})  # fmt: skip
     return Final(

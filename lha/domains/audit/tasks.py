@@ -55,6 +55,11 @@ class ServiceRead(BaseModel):
     event_id: str
 
 
+class RegistryEntry(BaseModel):
+    service: str
+    replicas: int = Field(ge=0)
+
+
 class DocumentRead(BaseModel):
     """One page of a document, which for most documents is the whole of it."""
 
@@ -62,8 +67,13 @@ class DocumentRead(BaseModel):
     page: int = Field(ge=0)
     pages: int = Field(ge=1)
     mentions: list[str]  # hosts named on this page
-    registry: dict[str, int] | None = None  # only for registry.json
+    # Only for registry.json. It is a list and not a dict, because a strict
+    # JSON schema, which Claude's native output uses, turns a dict into {}.
+    registry: list[RegistryEntry] | None = None
     event_id: str
+
+    def entries(self) -> dict[str, int] | None:
+        return None if self.registry is None else {e.service: e.replicas for e in self.registry}
 
 
 class DiscoverOutput(BaseModel):
