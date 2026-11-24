@@ -5,7 +5,7 @@ description = "Multi-agent system that stays coherent over long horizons"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.8",
-    "pydantic-ai-slim>=1.0",
+    "pydantic-ai-slim>=2.73",
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "httpx>=0.27",
@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Real models are opt-in (--model), and runs use the fake model without these.
-models = ["pydantic-ai-slim[anthropic,openai]>=1.0"]
+models = ["pydantic-ai-slim[anthropic,openai]>=2.73"]
 # The MCP server (lha mcp), so an assistant such as Claude Code can hand research to lha.
 mcp = ["mcp>=2.3,<3"]
 
