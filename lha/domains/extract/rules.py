@@ -273,11 +273,14 @@ async def split(coord: "Coordinator", conn: AsyncConnection, task: Row, reason: 
 
 
 async def goal_met(coord: "Coordinator", conn: AsyncConnection) -> bool:
-    """Every document is read to its last page, or given up."""
+    """Every document is read to its last page, or given up, and at least one
+    is read, because a run that gave up on every document met nothing, so it
+    stalls and writes a partial report instead."""
     counts = await crud.current_fact(conn, coord.sid, F.PROGRESS, F.COUNTS)
     if counts is None:
         return False
-    return counts.value["done"] + counts.value["unreadable"] >= counts.value["docs"]
+    done = counts.value["done"]
+    return done > 0 and done + counts.value["unreadable"] >= counts.value["docs"]
 
 
 async def reopen(coord: "Coordinator", conn: AsyncConnection) -> int:

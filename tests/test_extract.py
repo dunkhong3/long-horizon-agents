@@ -128,6 +128,16 @@ async def test_pages_read_apart_are_put_together_and_disagreements_kept(engine):
         assert await rules.goal_met(coord, conn)
 
 
+async def test_giving_up_on_every_document_does_not_meet_the_goal(engine):
+    sid, coord = await _session(engine, ["a.txt"])
+    async with engine.begin() as conn:
+        task, _ = await _read(conn, sid, "a.txt", {})
+        await rules.replan(coord, conn, task, "unreadable", 0.0, False)
+        counts = await crud.current_fact(conn, sid, F.PROGRESS, F.COUNTS)
+        assert counts.value["unreadable"] == 1 and counts.value["done"] == 0
+        assert not await rules.goal_met(coord, conn)
+
+
 def test_a_folder_of_documents_needs_a_real_model_and_its_fields():
     args = parse_args(["--docs", ".", "--fields", "invoice number; total", "--model", "test"])
     assert args.domain == "extract" and real_world_problem(args) is None
