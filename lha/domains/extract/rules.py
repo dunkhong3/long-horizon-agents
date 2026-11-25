@@ -119,8 +119,18 @@ async def accept_extract(coord: "Coordinator", conn: AsyncConnection, task: Row,
 
 
 async def update_progress(coord: "Coordinator", conn: AsyncConnection, task: Row | None) -> dict[str, int]:
-    """The counts the writer works from, worked out again from the facts
-    every time, in one query however many documents there are."""
+    """The counts the writer and the progress line work from, worked out again
+    from the facts every time, which only the leader keeps as a fact, because
+    a fact has one writer and every coordinator accepts reads."""
+    counts = await count_progress(coord, conn)
+    if coord.partition == 0:
+        source = task.id if task is not None else None
+        await crud.upsert_fact(conn, coord.sid, F.PROGRESS, F.COUNTS, counts, source_task_id=source)
+    return counts
+
+
+async def count_progress(coord: "Coordinator", conn: AsyncConnection) -> dict[str, int]:
+    """The counts, in one query however many documents there are."""
     row = (
         await conn.execute(
             text(
@@ -141,10 +151,7 @@ async def update_progress(coord: "Coordinator", conn: AsyncConnection, task: Row
         )
     ).one()  # fmt: skip
     keys = ("done", "values", "missing", "conflicts", "unreadable")
-    counts = {"docs": len(docs_of(coord)), **dict(zip(keys, row, strict=True))}
-    source = task.id if task is not None else None
-    await crud.upsert_fact(conn, coord.sid, F.PROGRESS, F.COUNTS, counts, source_task_id=source)
-    return counts
+    return {"docs": len(docs_of(coord)), **dict(zip(keys, row, strict=True))}
 
 
 # --- the table ------------------------------------------------------------------------
@@ -275,12 +282,10 @@ async def split(coord: "Coordinator", conn: AsyncConnection, task: Row, reason: 
 async def goal_met(coord: "Coordinator", conn: AsyncConnection) -> bool:
     """Every document is read to its last page, or given up, and at least one
     is read, because a run that gave up on every document met nothing, so it
-    stalls and writes a partial report instead."""
-    counts = await crud.current_fact(conn, coord.sid, F.PROGRESS, F.COUNTS)
-    if counts is None:
-        return False
-    done = counts.value["done"]
-    return done > 0 and done + counts.value["unreadable"] >= counts.value["docs"]
+    stalls and writes a partial report instead. Only the leader asks, and it
+    keeps the counts up to date while it does."""
+    counts = await update_progress(coord, conn, None)
+    return counts["done"] > 0 and counts["done"] + counts["unreadable"] >= counts["docs"]
 
 
 async def reopen(coord: "Coordinator", conn: AsyncConnection) -> int:
@@ -293,7 +298,11 @@ async def reopen(coord: "Coordinator", conn: AsyncConnection) -> int:
     for doc in docs_of(coord):
         subject = F.doc_subject(doc)
         read = reads.get(subject)
-        if doc in active or subject in unreadable or (read and len(read["done"]) == read["pages"]):
+        if (
+            doc in active
+            or subject in unreadable
+            or (read and len(read.value["done"]) == read.value["pages"])
+        ):
             continue
         inp = ExtractInput(doc=doc, fields=fields_of(coord), round=MAX_ROUNDS + 1)
         if await coord.create(conn, "extract_doc", inp, None):

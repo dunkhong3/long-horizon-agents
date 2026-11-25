@@ -1,7 +1,7 @@
 """Batch extraction: the mock invoices, reading documents, and the coordinator's checks."""
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from lha.core.coordinator import Coordinator
 from lha.core.domain import Rejected
@@ -136,6 +136,34 @@ async def test_giving_up_on_every_document_does_not_meet_the_goal(engine):
         counts = await crud.current_fact(conn, sid, F.PROGRESS, F.COUNTS)
         assert counts.value["unreadable"] == 1 and counts.value["done"] == 0
         assert not await rules.goal_met(coord, conn)
+
+
+async def test_a_stall_reopens_only_the_documents_that_are_not_read(engine):
+    """A document read to the end is left alone, which once crashed the
+    coordinator, because the read was a row that was indexed like a dict."""
+    sid, coord = await _session(engine, ["a.txt", "b.txt"])
+    async with engine.begin() as conn:
+        task, _ = await _read(conn, sid, "a.txt", {0: "Total due: 1.00 EUR."})
+        await rules.accept_extract(coord, conn, task, ExtractOutput(doc="a.txt", values=[]))
+        await conn.execute(update(tasks).where(tasks.c.session_id == sid).values(status="failed"))
+        assert await rules.reopen(coord, conn) == 1
+        q = select(tasks.c.task_key).where(tasks.c.session_id == sid, tasks.c.status == "ready")
+        assert (await conn.execute(q)).scalars().all() == ["extract_doc:b.txt#3"]
+
+
+async def test_only_the_leader_keeps_the_counts(engine):
+    """Every coordinator accepts reads, and a fact has one writer, so a second
+    coordinator leaves the counts to the leader, which works them out again
+    from the facts, where two writers of one fact once crashed one of them."""
+    sid, leader = await _session(engine, ["a.txt"])
+    second = Coordinator(engine, sid, partition=1)
+    await second.load()
+    async with engine.begin() as conn:
+        task, _ = await _read(conn, sid, "a.txt", {0: "Total due: 1.00 EUR."})
+        await rules.accept_extract(second, conn, task, ExtractOutput(doc="a.txt", values=[]))
+        assert await crud.current_fact(conn, sid, F.PROGRESS, F.COUNTS) is None
+        assert await rules.goal_met(leader, conn)
+        assert (await crud.current_fact(conn, sid, F.PROGRESS, F.COUNTS)).value["done"] == 1
 
 
 def test_a_folder_of_documents_needs_a_real_model_and_its_fields():
