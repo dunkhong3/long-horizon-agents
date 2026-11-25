@@ -1,10 +1,11 @@
-"""The four tables, where Postgres is the only state shared between processes.
+"""The tables, where Postgres is the only state shared between processes.
 
 These are internal storage definitions (SQLAlchemy Core). The contracts
 between processes live in lha/core/schemas.py and each domain's tasks.py.
 """
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     Float,
@@ -83,7 +84,9 @@ tasks = Table(
     Column("partition", Integer, nullable=False),  # which coordinator decides its results
     Column("input", JSONB, nullable=False),
     Column("scope", JSONB, nullable=False),  # which facts the context builder selects
-    Column("status", Text, nullable=False),  # ready|leased|submitted|succeeded|failed|split|cancelled
+    # waiting|ready|leased|submitted|succeeded|failed|split|cancelled, where a
+    # waiting task is planned ahead and waits on the tasks in task_deps
+    Column("status", Text, nullable=False),
     Column("attempt", Integer, nullable=False, server_default="1"),
     Column("max_attempts", Integer, nullable=False),
     Column("leased_by", Text),
@@ -97,6 +100,19 @@ tasks = Table(
     UniqueConstraint("session_id", "task_key", name="tasks_one_per_key"),
     Index("tasks_claim", "session_id", "status", "role", "created_at"),
     Index("tasks_by_partition", "session_id", "partition", "status"),
+)
+
+# What a task planned ahead waits on, one row per task it waits for. A
+# required edge needs that task to succeed, and one that isn't only needs it
+# to be finished in any way (see Coordinator.settle_waiting).
+task_deps = Table(
+    "task_deps",
+    metadata,
+    Column("session_id", UUID(as_uuid=True), ForeignKey("sessions.id"), nullable=False),
+    Column("task_id", UUID(as_uuid=True), primary_key=True),  # the task that waits
+    Column("depends_on", UUID(as_uuid=True), primary_key=True),  # the task it waits for
+    Column("required", Boolean, nullable=False),
+    Index("task_deps_by_dependency", "depends_on"),
 )
 
 facts = Table(

@@ -32,7 +32,6 @@ if TYPE_CHECKING:
 
 MAX_ROUNDS = 4  # whole checks, each followed by fixes for what it names
 MAX_ITEMS_PER_ROUND = 20  # the rest come back in the next round's check
-ACTIVE = ("ready", "leased", "submitted")
 
 
 def _work(coord: "Coordinator") -> Path:
@@ -80,8 +79,24 @@ async def accept_check(coord: "Coordinator", conn: AsyncConnection, task: Row, o
             raise Rejected(f"the check's output doesn't name {item!r}")
     result = {"commit": head, "passed": False, "round": inp.round, "failing": items}
     await crud.upsert_fact(conn, coord.sid, F.CHECK, F.RESULT, result, source_task_id=task.id)
+    await plan_round(coord, conn, task, inp, items)
+
+
+async def plan_round(
+    coord: "Coordinator", conn: AsyncConnection, task: Row, inp: CheckInput, items: list[str]
+) -> None:
+    """A fix for each item a whole check named, and the next whole check,
+    planned now and waiting for every one of those fixes to finish, whether
+    it fixed its item or gave up on it, so the round ends when its last fix
+    does, whichever coordinator took it."""
+    fixes = []
     for item in items[:MAX_ITEMS_PER_ROUND]:
-        await coord.create(conn, "fix_item", FixInput(item=item, round=inp.round), task.id)
+        fix = FixInput(item=item, round=inp.round)
+        fixes.append(
+            await coord.create(conn, "fix_item", fix, task.id) or await coord.task_id(conn, "fix_item", fix)
+        )
+    if fixes and inp.round < MAX_ROUNDS:
+        await coord.create(conn, "check_all", CheckInput(round=inp.round + 1), task.id, after=fixes)
 
 
 # --- fixing one item ------------------------------------------------------------------
@@ -129,20 +144,6 @@ async def accept_fix(coord: "Coordinator", conn: AsyncConnection, task: Row, out
     await crud.upsert_fact(
         conn, coord.sid, F.item_subject(inp.item), F.STATUS, status, status=VERIFIED, source_task_id=task.id
     )
-    await next_round(coord, conn, inp.round, task)
-
-
-async def next_round(coord: "Coordinator", conn: AsyncConnection, round_: int, task: Row) -> None:
-    """Once no fix of a round is left, the whole check runs again, which
-    starts the next round, until the rounds run out."""
-    q = select(func.count()).where(
-        tasks.c.session_id == coord.sid,
-        tasks.c.type == "fix_item",
-        tasks.c.status.in_(ACTIVE),
-        tasks.c.id != task.id,
-    )
-    if (await conn.execute(q)).scalar_one() == 0 and round_ < MAX_ROUNDS:
-        await coord.create(conn, "check_all", CheckInput(round=round_ + 1), task.id)
 
 
 # --- the report -----------------------------------------------------------------------
@@ -211,8 +212,7 @@ async def replan(
         await crud.upsert_fact(
             conn, coord.sid, F.item_subject(inp.item), F.UNFIXABLE, True, source_task_id=task.id
         )
-        await coord.decide(conn, task, "replan", "given up for this round")
-        return await next_round(coord, conn, inp.round, task)
+        return await coord.decide(conn, task, "replan", "given up for this round")
     await coord.decide(conn, task, "replan", "given up; a stall runs the whole check again")
 
 
@@ -226,8 +226,8 @@ async def goal_met(coord: "Coordinator", conn: AsyncConnection) -> bool:
 
 async def reopen(coord: "Coordinator", conn: AsyncConnection) -> int:
     """When nothing is left to do and the goal isn't met, the whole check runs
-    again as the next round, which also covers a check that failed for good
-    and a round whose last fix was accepted while another was still open."""
+    again as the next round, which covers a whole check that failed for good,
+    since nothing was planned after it."""
     active = await coord.active_tasks(conn)
     if any(t == "check_all" for t, _ in active):
         return 0

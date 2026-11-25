@@ -59,6 +59,18 @@ class TaskType:
     rereads: bool = False  # whether it reads again on purpose, so its reads are never 'repeated'
 
 
+@dataclass(frozen=True)
+class Planned:
+    """A start task planned ahead of its inputs, which waits on start tasks
+    listed before it, named by their task_key. It `needs` a task that must
+    succeed and comes `after` one that only has to be finished in any way."""
+
+    type: str
+    input: BaseModel
+    after: tuple[str, ...] = ()
+    needs: tuple[str, ...] = ()
+
+
 class Domain:
     """The base class every domain fills in. The defaults are what a domain
     gets when it has no use for a mechanism, such as splitting."""
@@ -117,8 +129,11 @@ class Domain:
         """Anything else the goal text names, besides the starting points."""
         return {}
 
-    def start_tasks(self, world: Any, goal: str, params: dict[str, Any]) -> list[tuple[str, BaseModel]]:
-        """The first tasks, from the world, the goal and the parameters prepare() returned."""
+    def start_tasks(
+        self, world: Any, goal: str, params: dict[str, Any]
+    ) -> list[tuple[str, BaseModel] | Planned]:
+        """The first tasks, from the world, the goal and the parameters prepare()
+        returned, where a Planned one may wait on the ones before it."""
         raise NotImplementedError
 
     def task_key(self, task_type: str, inp: BaseModel) -> str:
@@ -212,6 +227,7 @@ async def create_task(
     parent_task_id: UUID | None = None,
     delay_seconds: float = 0.0,
     partitions: int = 1,
+    waiting: bool = False,
 ) -> UUID | None:
     """Create a task with everything the domain says about it (see crud.create_task)."""
     resource = domain.resource(task_type, inp)
@@ -227,7 +243,28 @@ async def create_task(
         partition=task_partition(resource, partitions),
         parent_task_id=parent_task_id,
         delay_seconds=delay_seconds,
+        waiting=waiting,
     )
+
+
+async def create_start_tasks(
+    conn: AsyncConnection, session_id: UUID, domain: Domain, planned: list, partitions: int
+) -> None:
+    """Create a session's first tasks, where a Planned one waits on the start
+    tasks before it, which it names by key, so nothing can wait on itself."""
+    ids: dict[str, UUID] = {}
+    for item in planned:
+        p = item if isinstance(item, Planned) else Planned(*item)
+        deps = [(key, True) for key in p.needs] + [(key, False) for key in p.after if key not in p.needs]
+        unknown = [key for key, _ in deps if key not in ids]
+        if unknown:
+            raise ValueError(f"{p.type} waits on {unknown}, which are not start tasks before it")
+        new = await create_task(
+            conn, session_id, domain, p.type, p.input, partitions=partitions, waiting=bool(deps)
+        )
+        if new is not None:
+            ids[domain.task_key(p.type, p.input)] = new
+            await crud.add_deps(conn, session_id, new, [(ids[key], required) for key, required in deps])
 
 
 def get_domain(name: str) -> Domain:

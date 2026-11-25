@@ -60,7 +60,7 @@ from lha.db.notify import Listener
 from lha.faults import roll
 
 ACTOR = "coordinator"
-ACTIVE = ("ready", "leased", "submitted")
+ACTIVE = ("waiting", "ready", "leased", "submitted")
 PERMANENT_ERRORS = ("not_found", "unreadable", "context_overflow")
 # Failures that say something about a resource, which feed its circuit breaker.
 NETWORK_ERRORS = ("timeout", "server_error", "rate_limited", "empty_response", "malformed_response",
@@ -89,6 +89,11 @@ class Coordinator:
         self.quiet = quiet
         self.session: Row
         self.domain: Domain
+        # The task being split while domain.split runs, whose waiting
+        # dependents move to every part, and the tasks that got a
+        # replacement during the current split or replan.
+        self._splitting: Row | None = None
+        self._replaced: set[UUID] = set()
 
     async def load(self) -> None:
         async with self.engine.connect() as conn:
@@ -121,6 +126,7 @@ class Coordinator:
             while True:
                 async with self.engine.begin() as conn:
                     await self._sweep_expired_leases(conn)
+                    await self.settle_waiting(conn)
 
                 submitted = await self._submitted_task_ids()
                 for task_id in submitted:
@@ -336,7 +342,7 @@ class Coordinator:
             # for the wrong thing, and that is no reason to give up on the task.
             kind = "wrong_call"
         probe_at = await self._breaker_failure(conn, task, kind)
-        if kind == "context_overflow" and await self.domain.split(self, conn, task, reason):
+        if kind == "context_overflow" and await self._split(conn, task, reason):
             return
         if kind not in PERMANENT_ERRORS and task.attempt < task.max_attempts:
             not_before = probe_at or _now() + timedelta(seconds=BACKOFF_BASE_SECONDS * 2**task.attempt)
@@ -358,9 +364,23 @@ class Coordinator:
         await self.decide(conn, task, "fail", f"{kind}: {reason}")
         await self._replan(conn, task, kind, probe_at)
 
+    async def _split(self, conn: AsyncConnection, task: Row, reason: str) -> bool:
+        """Let the domain split a task too big for one attempt, where every
+        task it creates is a part of this one, so whatever waits on this task
+        waits on all of the parts instead."""
+        self._splitting = task
+        try:
+            split = await self.domain.split(self, conn, task, reason)
+        finally:
+            self._splitting = None
+        await self._settle_replacement(conn, task)
+        return split
+
     async def _replan(self, conn: AsyncConnection, task: Row, kind: str, probe_at: datetime | None) -> None:
         """What happens to a task that failed for good. Nothing downstream was
-        ever created from it, because follow-ups only come from accepted results."""
+        ever created from its result, because follow-ups only come from
+        accepted results, and a task planned ahead that needs it is failed in
+        turn unless the domain creates a replacement (see create)."""
         if kind == "context_overflow":
             # A new round would be just as big, so there is no point.
             return await self.decide(conn, task, "replan", "too big for one attempt; given up")
@@ -375,6 +395,28 @@ class Coordinator:
         if probe_at is not None:
             delay = max(delay, (probe_at - _now()).total_seconds())
         await self.domain.replan(self, conn, task, kind, delay, probe=probe_at is not None)
+        await self._settle_replacement(conn, task)
+
+    async def _settle_replacement(self, conn: AsyncConnection, task: Row) -> None:
+        """Once a task's replacements are created, nothing waits on the task itself any more."""
+        if task.id in self._replaced:
+            self._replaced.discard(task.id)
+            await crud.drop_deps_on(conn, task.id)
+
+    async def settle_waiting(self, conn: AsyncConnection) -> int:
+        """Release this partition's waiting tasks whose dependencies are done,
+        and fail those that need a task which failed for good with nothing
+        to replace it, since their input will never exist. Only a task's own
+        coordinator settles it, so two coordinators never race over one."""
+        for task in await crud.blocked_waiting(conn, self.sid, self.partition):
+            await conn.execute(update(tasks).where(tasks.c.id == task.id).values(status="failed"))
+            await self.decide(conn, task, "fail", f"upstream_failed: {task.blocked_by} failed for good")
+            await self._replan(conn, task, "upstream_failed", None)
+        released = await crud.release_waiting(conn, self.sid, self.partition)
+        for row in released:
+            payload = {"action": "release", "reason": "what it waits on is done", "task_key": row.task_key}
+            await crud.log_event(conn, self.sid, ACTOR, "decision", payload, row.id, 1)
+        return len(released)
 
     async def _sweep_expired_leases(self, conn: AsyncConnection) -> None:
         """A worker that stopped heartbeating has lost its task, so hand it out again.
@@ -405,12 +447,23 @@ class Coordinator:
         parent: UUID | None,
         delay: float = 0.0,
         probe: bool = False,
+        *,
+        after: tuple[UUID, ...] | list[UUID] = (),
+        needs: tuple[UUID, ...] | list[UUID] = (),
+        replaces: Row | None = None,
     ) -> UUID | None:
         """Create a task, holding it back while its resource's breaker is open.
 
         The one task that tests whether the resource is back (the probe) may
         run when the cooldown ends, and every other task for the resource waits
         another cooldown on top, or until the probe succeeds.
+
+        A task planned ahead of its inputs waits on tasks that already exist,
+        so nothing can wait on itself, where it `needs` a task that must
+        succeed and comes `after` one that only has to finish in any way. It
+        starts out waiting, and settle_waiting releases it. A task that
+        `replaces` a failed one, such as its next round, takes over whatever
+        waited on that one, and so does every part of a task being split.
         """
         resource = self.domain.resource(task_type, inp)
         if self.domain.task_types[task_type].network and resource:
@@ -420,9 +473,24 @@ class Coordinator:
                 if not probe:
                     until += timedelta(seconds=BREAKER_COOLDOWN_SECONDS)
                 delay = max(delay, (until - _now()).total_seconds())
-        return await create_task(
-            conn, self.sid, self.domain, task_type, inp, parent, delay, self.session.partitions
-        )
+        deps = [(d, True) for d in needs] + [(d, False) for d in after if d not in needs]
+        new = await create_task(
+            conn, self.sid, self.domain, task_type, inp, parent, delay, self.session.partitions,
+            waiting=bool(deps),
+        )  # fmt: skip
+        if new is not None:
+            await crud.add_deps(conn, self.sid, new, deps)
+        replaced = replaces or self._splitting
+        if replaced is not None:
+            target = new or await self.task_id(conn, task_type, inp)
+            if target is not None and target != replaced.id:
+                await crud.copy_deps(conn, self.sid, replaced.id, target)
+                self._replaced.add(replaced.id)
+        return new
+
+    async def task_id(self, conn: AsyncConnection, task_type: str, inp: BaseModel) -> UUID | None:
+        """The id of the task with this type and input, if it exists, whatever its status."""
+        return await crud.task_id_by_key(conn, self.sid, self.domain.task_key(task_type, inp))
 
     async def _breaker_failure(self, conn: AsyncConnection, task: Row, kind: str) -> datetime | None:
         """Count a failed network attempt against its resource, and open the

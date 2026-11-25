@@ -55,7 +55,7 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 let chosen = null;
-const STATUSES = ["ready", "leased", "submitted", "succeeded", "failed", "split", "cancelled"];
+const STATUSES = ["waiting", "ready", "leased", "submitted", "succeeded", "failed", "split", "cancelled"];
 
 async function refreshList() {
   const list = await (await fetch("/api/sessions")).json();

@@ -46,7 +46,7 @@ from lha.config import (
 )
 from lha.core.agent import AUTO, FAKE, resolve_model
 from lha.core.coordinator import progress_line
-from lha.core.domain import create_task, get_domain
+from lha.core.domain import create_start_tasks, get_domain
 from lha.core.scoring import Score, score_session
 from lha.db import crud, init_schema, make_engine
 from lha.db.models import events, sessions, tasks
@@ -282,8 +282,9 @@ async def create_session(engine, args: argparse.Namespace) -> UUID:
             )
         )
         await crud.log_event(conn, sid, "supervisor", "session_started", {"seed": args.seed})
-        for task_type, inp in domain.start_tasks(world, goal, params):
-            await create_task(conn, sid, domain, task_type, inp, partitions=args.coordinators)
+        await create_start_tasks(
+            conn, sid, domain, domain.start_tasks(world, goal, params), args.coordinators
+        )
     return sid
 
 

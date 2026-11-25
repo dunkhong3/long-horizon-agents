@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from lha.config import LEASE_SECONDS, MAX_ATTEMPTS
 from lha.core.schemas import OBSERVED, SUPERSEDED, VERIFIED
-from lha.db.models import events, facts, sessions, tasks
+from lha.db.models import events, facts, sessions, task_deps, tasks
 from lha.ids import uuid7
 
 # A 'step' is one model call or one tool call.
@@ -94,12 +94,14 @@ async def create_task(
     partition: int,
     parent_task_id: UUID | None = None,
     delay_seconds: float = 0.0,
+    waiting: bool = False,
 ) -> UUID | None:
     """Create a task unless one with the same task_key already exists.
 
     Returns the new task's id, or None if it already existed (in which case
     nothing happens). The domain works out the key, role, scope, resource and
-    partition (see lha.core.domain.create_task).
+    partition (see lha.core.domain.create_task). A task planned ahead of its
+    inputs starts out waiting, and its dependencies go in task_deps.
     """
     stmt = (
         pg_insert(tasks)
@@ -114,7 +116,7 @@ async def create_task(
             partition=partition,
             input=inp,
             scope=scope,
-            status="ready",  # tasks are only created once their inputs exist
+            status="waiting" if waiting else "ready",
             attempt=1,
             max_attempts=MAX_ATTEMPTS,
             not_before=func.now() + timedelta(seconds=delay_seconds) if delay_seconds else None,
@@ -123,6 +125,79 @@ async def create_task(
         .returning(tasks.c.id)
     )
     return (await conn.execute(stmt)).scalar_one_or_none()
+
+
+async def task_id_by_key(conn: AsyncConnection, session_id: UUID, key: str) -> UUID | None:
+    q = select(tasks.c.id).where(tasks.c.session_id == session_id, tasks.c.task_key == key)
+    return (await conn.execute(q)).scalar_one_or_none()
+
+
+# --- tasks planned ahead of their inputs ------------------------------------------------
+
+
+async def add_deps(
+    conn: AsyncConnection, session_id: UUID, task_id: UUID, deps: list[tuple[UUID, bool]]
+) -> None:
+    """Record what a waiting task waits on, as (task it waits for, whether it must succeed)."""
+    rows = [{"session_id": session_id, "task_id": task_id, "depends_on": d, "required": r} for d, r in deps]
+    if rows:
+        await conn.execute(pg_insert(task_deps).values(rows).on_conflict_do_nothing())
+
+
+async def copy_deps(conn: AsyncConnection, session_id: UUID, old: UUID, new: UUID) -> None:
+    """Make every task that waits on `old` also wait on `new`, its replacement."""
+    await conn.execute(
+        text(
+            """
+            INSERT INTO task_deps (session_id, task_id, depends_on, required)
+            SELECT session_id, task_id, :new, required FROM task_deps WHERE depends_on = :old
+            ON CONFLICT DO NOTHING
+            """
+        ),
+        {"old": old, "new": new},
+    )
+
+
+async def drop_deps_on(conn: AsyncConnection, task_id: UUID) -> None:
+    """Forget the edges to a task that has been replaced, so nothing waits on it any more."""
+    await conn.execute(task_deps.delete().where(task_deps.c.depends_on == task_id))
+
+
+# A waiting task is let down when a task it needs failed for good, was split
+# or was cancelled, and nothing replaced it, because then its input will never exist.
+BLOCKED_SQL = text(
+    """
+    SELECT DISTINCT ON (t.id) t.*, dep.task_key AS blocked_by FROM tasks t
+      JOIN task_deps d ON d.task_id = t.id
+      JOIN tasks dep ON dep.id = d.depends_on
+     WHERE t.session_id = :sid AND t.partition = :p AND t.status = 'waiting'
+       AND d.required AND dep.status IN ('failed', 'split', 'cancelled')
+     ORDER BY t.id, dep.task_key
+    """
+)
+
+# A waiting task may run once nothing it waits on is still active and every
+# task it needs has succeeded, which also covers a task left waiting on nothing.
+RELEASE_SQL = text(
+    """
+    UPDATE tasks t SET status = 'ready'
+     WHERE t.session_id = :sid AND t.partition = :p AND t.status = 'waiting'
+       AND NOT EXISTS (
+         SELECT 1 FROM task_deps d JOIN tasks dep ON dep.id = d.depends_on
+          WHERE d.task_id = t.id
+            AND (dep.status IN ('waiting', 'ready', 'leased', 'submitted')
+                 OR (d.required AND dep.status <> 'succeeded')))
+    RETURNING t.id, t.task_key
+    """
+)
+
+
+async def blocked_waiting(conn: AsyncConnection, session_id: UUID, partition: int) -> list[Row]:
+    return list((await conn.execute(BLOCKED_SQL, {"sid": session_id, "p": partition})).all())
+
+
+async def release_waiting(conn: AsyncConnection, session_id: UUID, partition: int) -> list[Row]:
+    return list((await conn.execute(RELEASE_SQL, {"sid": session_id, "p": partition})).all())
 
 
 # One statement, so one transaction. It picks the oldest ready task for this
