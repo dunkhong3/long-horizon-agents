@@ -1,11 +1,13 @@
 """The lha command and the MCP server, which start runs in the background and read them back."""
 
+import asyncio
 import os
 import re
 import subprocess
 import sys
 import time
 
+import pytest
 from mcp import Client
 from sqlalchemy import update
 
@@ -40,6 +42,29 @@ async def test_a_session_is_found_by_the_start_of_its_id(engine):
     assert await runs.find_session(engine, "not-an-id") is None
     shared = os.path.commonprefix([str(first), str(second)])  # ids made in the same ms range share a start
     assert shared and await runs.find_session(engine, shared) is None
+
+
+@pytest.mark.parametrize(
+    "argv, expected",
+    [
+        (
+            ["join", "--machine", "beta", "--wait", "60"],
+            ["--join", "latest", "--machine", "beta", "--wait", "60"],
+        ),
+        (["join", "01a2", "--machine", "beta"], ["--join", "01a2", "--machine", "beta"]),
+        (["resume", "--budget", "1"], ["--resume", "--budget", "1"]),
+        (["research", "--budget=1", "why", "--detach"], ["--question", "why", "--budget=1", "--detach"]),
+    ],
+)
+def test_a_run_option_s_value_is_never_taken_for_the_command_s_own(argv, expected, monkeypatch):
+    # without setting the run's options aside, the 'beta' of --machine beta
+    # became the session to join, and the run then failed on its options
+    seen = []
+    monkeypatch.setattr(cli, "_run", lambda run_argv: seen.append(run_argv) or 0)
+    monkeypatch.setattr(cli, "_database_problem", lambda: asyncio.sleep(0))
+    with pytest.raises(SystemExit):
+        cli.main(argv)
+    assert seen and seen[0][: len(expected)] == expected
 
 
 def test_a_detached_run_can_be_followed_and_read():

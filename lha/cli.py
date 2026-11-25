@@ -46,13 +46,49 @@ def load_env(path: Path = Path(".env")) -> None:
 def main(argv: list[str] | None = None) -> None:
     load_env()  # before anything imports lha.db, which reads DATABASE_URL once
     parser = _parser()
+    argv = sys.argv[1:] if argv is None else argv
     args, rest = parser.parse_known_args(argv)
     if rest and not args.passes_options:
         parser.error(f"unrecognized arguments: {' '.join(rest)}")
+    if args.passes_options:
+        # argparse doesn't know the run's options here, so it would take the
+        # value of one, such as the 'beta' of --machine beta, for the
+        # command's own positional, which is why they are set aside first
+        own, rest = split_run_options(argv[1:])
+        args = parser.parse_args([argv[0], *own])
     if args.command not in ("mcp", "domains") and (problem := asyncio.run(_database_problem())):
         print(problem, file=sys.stderr)
         sys.exit(2)
     sys.exit(args.handler(args, rest))
+
+
+def split_run_options(tokens: list[str]) -> tuple[list[str], list[str]]:
+    """The tokens that are not the run's options, and the run's options with
+    their values, which are what the options of python -m lha.run say they
+    take, so that `lha join --machine beta` joins the latest run as beta
+    instead of a session called 'beta'."""
+    from lha.run import _parser as run_parser
+
+    actions = run_parser()._option_string_actions
+    own: list[str] = []
+    options: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        action = actions.get(token.partition("=")[0]) if token.startswith("-") else None
+        if action is None:
+            own.append(token)
+        else:
+            options.append(token)
+            if "=" not in token and action.nargs is None:
+                i += 1
+                options.extend(tokens[i : i + 1])
+            elif "=" not in token and action.nargs == "?" and i + 1 < len(tokens):
+                if not tokens[i + 1].startswith("-"):
+                    i += 1
+                    options.append(tokens[i])
+        i += 1
+    return own, options
 
 
 async def _database_problem() -> str | None:
