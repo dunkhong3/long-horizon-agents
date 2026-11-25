@@ -236,7 +236,7 @@ def test_a_second_machine_joins_a_run_and_does_its_work():
         first = home.stdout.readline()
         sid = re.search(r"session ([0-9a-f-]{36})", first).group(1)
         url = asyncio.run(_world_url(sid))
-        assert not is_loopback(url) and httpx.get(f"{url}/health").status_code == 200
+        assert not is_loopback(url) and asyncio.run(_answers_soon(url)), url
         joined = subprocess.run(
             [*cmd, "--join", sid, "--wait", "30", "--machine", "beta", "--workers", "2,2"],
             capture_output=True, text=True, timeout=300,
@@ -304,6 +304,17 @@ async def _until(done, seconds: float = 15.0) -> None:
             return
         await asyncio.sleep(0.1)
     raise AssertionError("it never happened")
+
+
+async def _answers_soon(url: str) -> bool:
+    """Whether the world answers at its advertised address within a few seconds,
+    asked the way a joined machine asks it."""
+    async with httpx.AsyncClient(timeout=1.0) as client:
+        for _ in range(30):
+            if await run._answers(client, url):
+                return True
+            await asyncio.sleep(0.5)
+    return False
 
 
 async def _world_url(sid: str) -> str:
