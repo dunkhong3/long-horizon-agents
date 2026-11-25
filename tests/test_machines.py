@@ -7,7 +7,9 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -219,31 +221,34 @@ async def test_a_joined_machine_waits_while_the_world_does_not_answer(engine, ca
             await world.stop()
 
 
-def test_a_second_machine_joins_a_run_and_does_its_work():
+def test_a_second_machine_joins_a_run_and_does_its_work(tmp_path):
     """The home machine starts the run with no workers of its own for the
     first two roles, so the run can only pass if the joining machine works.
-    Both machines are this one under two names, which share the Postgres."""
+    Both machines are this one under two names, which share the Postgres.
+    The home's output goes to a file, because a pipe that nobody reads while
+    the joined machine works would fill up and stop the home's processes."""
     _own_hostname()
     cmd = [sys.executable, "-m", "lha.run", "--quiet", "--model", "fake"]
     alpha = ["--machine", "alpha", "--listen", "0.0.0.0", "--workers", "0,0"]
-    home = subprocess.Popen(
-        [*cmd, "--seed", "131", "--chaos", "0.2", *alpha],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    log = tmp_path / "home.log"
+    with open(log, "w") as out_file:
+        home = subprocess.Popen(
+            [*cmd, "--seed", "131", "--chaos", "0.2", *alpha], stdout=out_file, stderr=out_file
+        )
     try:
-        first = home.stdout.readline()
-        sid = re.search(r"session ([0-9a-f-]{36})", first).group(1)
+        sid = _session_in(log)
         url = asyncio.run(_world_url(sid))
-        assert not is_loopback(url) and asyncio.run(_answers_soon(url)), url
+        if not asyncio.run(_answers_soon(url)):
+            pytest.fail(_why_no_answer(url, home, log))
         joined = subprocess.run(
             [*cmd, "--join", sid, "--wait", "30", "--machine", "beta", "--workers", "2,2"],
             capture_output=True, text=True, timeout=300,
         )  # fmt: skip
-        out = first + home.communicate(timeout=300)[0]
+        home.wait(timeout=300)
     finally:
         home.kill()
+    out = log.read_text()
+    assert not is_loopback(url)
     assert home.returncode == 0 and "verdict=PASS" in out and "machines: alpha (its home), beta" in out, out
     assert (
         joined.returncode == 0
@@ -289,6 +294,36 @@ def test_a_joined_machine_waits_through_a_crash_of_the_home_and_follows_the_resu
     assert "is over (succeeded)" in out
 
 
+def _session_in(log: Path) -> str:
+    """The session a supervisor writing to this file started, from its first line."""
+    for _ in range(300):
+        if found := re.search(r"session ([0-9a-f-]{36})", log.read_text()):
+            return found.group(1)
+        time.sleep(0.1)
+    raise AssertionError(log.read_text())
+
+
+def _why_no_answer(url: str, home: subprocess.Popen, log: Path) -> str:
+    """What is known when the world doesn't answer at its advertised address,
+    which is whether the home is alive, whether the world answers on this
+    machine's own loopback address, and what the advertised name resolves to."""
+    parts = urlsplit(url)
+    local = asyncio.run(_answers_soon(f"http://127.0.0.1:{parts.port}", tries=2))
+    try:
+        addresses = sorted(
+            {a[4][0] for a in socket.getaddrinfo(parts.hostname, parts.port, type=socket.SOCK_STREAM)}
+        )
+    except OSError as e:
+        addresses = [f"none ({e})"]
+    alive = home.poll() is None
+    home.kill()
+    return (
+        f"no answer at {url}, while the home is {'alive' if alive else 'gone'}, the world "
+        f"{'answers' if local else 'does not answer'} at 127.0.0.1, and {parts.hostname} is {addresses}; "
+        f"the home wrote this:\n{log.read_text()}"
+    )
+
+
 def _own_hostname() -> str:
     """This machine's hostname, which a mock world that listens on every address advertises."""
     try:
@@ -306,11 +341,11 @@ async def _until(done, seconds: float = 15.0) -> None:
     raise AssertionError("it never happened")
 
 
-async def _answers_soon(url: str) -> bool:
+async def _answers_soon(url: str, tries: int = 30) -> bool:
     """Whether the world answers at its advertised address within a few seconds,
     asked the way a joined machine asks it."""
     async with httpx.AsyncClient(timeout=1.0) as client:
-        for _ in range(30):
+        for _ in range(tries):
             if await run._answers(client, url):
                 return True
             await asyncio.sleep(0.5)
