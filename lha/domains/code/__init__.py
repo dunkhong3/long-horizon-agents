@@ -60,6 +60,7 @@ def _repo(seed: int, size: int, goal_kind: str) -> MockRepo:
 
 class CodeDomain(Domain):
     name = "code"
+    description = "a check made to pass on a git repository, with every fix checked"
     roles = ("coder", "checker", "writer")
     task_types = {
         "check_all": TaskType(

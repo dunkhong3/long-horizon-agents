@@ -56,6 +56,7 @@ def _web(seed: int, size: int, goal_kind: str) -> MockWeb:
 
 class ResearchDomain(Domain):
     name = "research"
+    description = "answers to a question, each checked against the pages it comes from"
     roles = ("reader", "searcher", "analyst", "writer")
     task_types = {
         "plan_research": TaskType(

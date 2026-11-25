@@ -40,6 +40,7 @@ from lha.domains.audit.world import START_HOSTS, World, generate_world
 
 class AuditDomain(Domain):
     name = "audit"
+    description = "replica counts that drifted from the registry, on a mock network"
     roles = ("discovery", "analysis", "reporter")
     task_types = {
         "discover_host": TaskType(

@@ -10,6 +10,7 @@
     lha report [SESSION]               what a finished run found (default: the latest)
     lha resume [SESSION]               continue an unfinished run (default: the latest)
     lha join [SESSION]                 lend this machine's workers to a run another machine started
+    lha domains                        the domains it can run, built in or loaded from configuration
     lha dashboard                      a live view of every run, on http://localhost:8000
     lha mcp                            an MCP server, so Claude Code can start and follow research
 
@@ -48,7 +49,7 @@ def main(argv: list[str] | None = None) -> None:
     args, rest = parser.parse_known_args(argv)
     if rest and not args.passes_options:
         parser.error(f"unrecognized arguments: {' '.join(rest)}")
-    if args.command != "mcp" and (problem := asyncio.run(_database_problem())):
+    if args.command not in ("mcp", "domains") and (problem := asyncio.run(_database_problem())):
         print(problem, file=sys.stderr)
         sys.exit(2)
     sys.exit(args.handler(args, rest))
@@ -174,6 +175,23 @@ def _report(args: argparse.Namespace, rest: list[str]) -> int:
     return 0
 
 
+def _domains(args: argparse.Namespace, rest: list[str]) -> int:
+    from lha.domains import DOMAINS
+    from lha.domains.config import list_specs, search_path
+
+    for name, domain in DOMAINS.items():
+        print(f"{name:12}  {domain.description} (built in)")
+    for path, spec, problem in list_specs():
+        if spec is None:
+            print(f"{path.stem:12}  can't be loaded, because {problem}")
+        else:
+            print(f"{spec.name:12}  {spec.description or 'no description'} ({path})")
+    folders = ", ".join(str(p) for p in search_path())
+    print(f"\nA domain from configuration is a <name>.toml file found in {folders}, where LHA_DOMAIN_PATH")
+    print("adds folders, and lha start --domain <name> runs it, or --domain-file <path> runs any file.")
+    return 0
+
+
 def _dashboard(args: argparse.Namespace, rest: list[str]) -> int:
     from lha import dashboard
 
@@ -256,6 +274,7 @@ def _parser() -> argparse.ArgumentParser:
     c.add_argument("session", nargs="?")
     c.add_argument("--json", action="store_true")
     command("report", _report, "what a finished run found").add_argument("session", nargs="?")
+    command("domains", _domains, "the domains it can run, built in or loaded from configuration")
     command("dashboard", _dashboard, "a live view of every run (--host, --port)", True)
     command("mcp", _mcp, "an MCP server over stdin and stdout, for Claude Code")
     return p

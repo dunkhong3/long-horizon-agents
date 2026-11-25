@@ -1,0 +1,233 @@
+# Sorting support tickets, a domain loaded from configuration (lha/domains/config).
+#
+# The first stage says what each ticket is about, and the second, which
+# needs the first, routes it to a team with a priority, with what the first
+# stage found in its prompt. The tickets below are its own documents, which
+# are its mock world, and each says which values it states, so a run on them
+# is scored. With --docs it reads a folder of real tickets instead, which
+# needs a real model.
+#
+#     just start --domain tickets
+#     uv run lha start --domain tickets --docs ~/tickets --model anthropic:claude-sonnet-5-5
+
+name = "tickets"
+description = "support tickets sorted by what they are about and routed to a team"
+
+[[stage]]
+name = "classify"
+instructions = "Say who wrote the ticket, which product it is about and what kind of request it is."
+
+  [[stage.field]]
+  name = "customer"
+  form = "the name of the person who wrote the ticket"
+
+  [[stage.field]]
+  name = "product"
+  form = "the product the ticket is about"
+
+  [[stage.field]]
+  name = "category"
+  one_of = ["bug", "billing", "feature request", "account"]
+
+[[stage]]
+name = "route"
+needs = ["classify"]
+instructions = "Route the ticket to the team that should answer it, and say how urgent it is."
+
+  [[stage.field]]
+  name = "team"
+  one_of = ["engineering", "finance", "product", "support"]
+
+  [[stage.field]]
+  name = "priority"
+  one_of = ["low", "normal", "urgent"]
+
+[report]
+instructions = "Say how many tickets went to each team, and which ones are urgent."
+
+[[document]]
+name = "ticket-001.txt"
+text = """
+Ticket 001
+Customer: Ana Silva
+Product: Billing portal
+Category: billing
+Team: finance
+Priority: urgent
+
+Hello, I was charged twice for my March subscription. Could you refund one of the two charges?
+"""
+expect = { product = "Billing portal", category = "billing", team = "finance", customer = "Ana Silva", priority = "urgent" }
+
+[[document]]
+name = "ticket-002.txt"
+text = """
+Ticket 002
+Customer: Ben Okafor
+Product: Mobile app
+Category: bug
+Team: engineering
+Priority: normal
+
+The app closes as soon as I open the settings screen. It started after the last update.
+"""
+expect = { product = "Mobile app", category = "bug", team = "engineering", customer = "Ben Okafor", priority = "normal" }
+
+[[document]]
+name = "ticket-003.txt"
+text = """
+Ticket 003
+Customer: Chen Wei
+Product: Reports
+Category: feature request
+Team: product
+Priority: low
+
+It would help us a lot if the monthly report could be exported as a spreadsheet.
+"""
+expect = { product = "Reports", category = "feature request", team = "product", customer = "Chen Wei", priority = "low" }
+
+[[document]]
+name = "ticket-004.txt"
+text = """
+Ticket 004
+Customer: Dara Murphy
+Product: Account
+Category: account
+Team: support
+Priority: normal
+
+I changed my email address and now I cannot log in. Can you move my account to the new address?
+"""
+expect = { product = "Account", category = "account", team = "support", customer = "Dara Murphy", priority = "normal" }
+
+[[document]]
+name = "ticket-005.md"
+text = """
+# Support ticket
+
+Ticket 005
+
+Customer: Eva Novak
+
+Product: Mobile app
+
+Category: Bug
+
+Team: engineering
+
+Priority: urgent
+
+Push notifications arrive twice, and sometimes a day late. Our whole team sees it.
+"""
+expect = { product = "Mobile app", category = "bug", team = "engineering", customer = "Eva Novak", priority = "urgent" }
+
+[[document]]
+name = "ticket-006.html"
+text = """
+<html><body><p>Ticket 006</p><p>Customer: Farid Haddad</p><p>Product: Billing portal</p><p>Category: billing</p><p>Team: finance</p><p>The invoice for April shows the old company name. Please send a corrected one.</p></body></html>"""
+expect = { product = "Billing portal", category = "billing", team = "finance", customer = "Farid Haddad" }
+missing = ["priority"]
+
+[[document]]
+name = "ticket-007.txt"
+text = """
+Ticket 007
+Product: Website
+Category: bug
+Team: engineering
+Priority: low
+
+The contact form on the website shows an error after I press send. I am writing here instead.
+"""
+expect = { product = "Website", category = "bug", team = "engineering", priority = "low" }
+missing = ["customer"]
+
+[[document]]
+name = "ticket-008.txt"
+text = """
+Ticket 008
+Customer: Grace Kim
+Product: Reports
+Category: feature request
+Team: product
+Priority: normal
+
+Could the dashboard remember the filters I picked last time?
+"""
+expect = { product = "Reports", category = "feature request", team = "product", customer = "Grace Kim", priority = "normal" }
+
+[[document]]
+name = "ticket-009.txt"
+text = """
+Ticket 0009
+Customer: Hugo Lindqvist
+Product: Data import
+Category: bug
+
+Message 1 from Hugo, day 1: a smaller file with 1037 rows went through, but the dates came out as text.
+Message 2 from Support, day 2: after clearing the browser cache the import got to row 1074 and stopped again.
+Message 3 from Hugo, day 2: the same file worked last month, when it had 1111 fewer rows.
+Message 4 from Support, day 3: support asked for the file, and the customer sent a copy with 1148 rows removed.
+Message 5 from Hugo, day 3: the import stopped at row 1185 with no message.
+Message 6 from Support, day 4: a smaller file with 1222 rows went through, but the dates came out as text.
+Message 7 from Hugo, day 4: after clearing the browser cache the import got to row 1259 and stopped again.
+Message 8 from Support, day 5: the same file worked last month, when it had 1296 fewer rows.
+Message 9 from Hugo, day 5: support asked for the file, and the customer sent a copy with 1333 rows removed.
+Message 10 from Support, day 6: the import stopped at row 1370 with no message.
+Message 11 from Hugo, day 6: a smaller file with 1407 rows went through, but the dates came out as text.
+Message 12 from Support, day 7: after clearing the browser cache the import got to row 1444 and stopped again.
+Message 13 from Hugo, day 7: the same file worked last month, when it had 1481 fewer rows.
+Message 14 from Support, day 8: support asked for the file, and the customer sent a copy with 1518 rows removed.
+Message 15 from Hugo, day 8: the import stopped at row 1555 with no message.
+Message 16 from Support, day 9: a smaller file with 1592 rows went through, but the dates came out as text.
+Message 17 from Hugo, day 9: after clearing the browser cache the import got to row 1629 and stopped again.
+Message 18 from Support, day 10: the same file worked last month, when it had 1666 fewer rows.
+Message 19 from Hugo, day 10: support asked for the file, and the customer sent a copy with 1703 rows removed.
+Message 20 from Support, day 11: the import stopped at row 1740 with no message.
+Message 21 from Hugo, day 11: a smaller file with 1777 rows went through, but the dates came out as text.
+Message 22 from Support, day 12: after clearing the browser cache the import got to row 1814 and stopped again.
+Message 23 from Hugo, day 12: the same file worked last month, when it had 1851 fewer rows.
+Message 24 from Support, day 13: support asked for the file, and the customer sent a copy with 1888 rows removed.
+Message 25 from Hugo, day 13: the import stopped at row 1925 with no message.
+Message 26 from Support, day 14: a smaller file with 1962 rows went through, but the dates came out as text.
+Message 27 from Hugo, day 14: after clearing the browser cache the import got to row 1999 and stopped again.
+Message 28 from Support, day 15: the same file worked last month, when it had 2036 fewer rows.
+Message 29 from Hugo, day 15: support asked for the file, and the customer sent a copy with 2073 rows removed.
+Message 30 from Support, day 16: the import stopped at row 2110 with no message.
+Message 31 from Hugo, day 16: a smaller file with 2147 rows went through, but the dates came out as text.
+Message 32 from Support, day 17: after clearing the browser cache the import got to row 2184 and stopped again.
+Message 33 from Hugo, day 17: the same file worked last month, when it had 2221 fewer rows.
+Message 34 from Support, day 18: support asked for the file, and the customer sent a copy with 2258 rows removed.
+Message 35 from Hugo, day 18: the import stopped at row 2295 with no message.
+Message 36 from Support, day 19: a smaller file with 2332 rows went through, but the dates came out as text.
+Message 37 from Hugo, day 19: after clearing the browser cache the import got to row 2369 and stopped again.
+Message 38 from Support, day 20: the same file worked last month, when it had 2406 fewer rows.
+Message 39 from Hugo, day 20: support asked for the file, and the customer sent a copy with 2443 rows removed.
+Message 40 from Support, day 21: the import stopped at row 2480 with no message.
+Message 41 from Hugo, day 21: a smaller file with 2517 rows went through, but the dates came out as text.
+Message 42 from Support, day 22: after clearing the browser cache the import got to row 2554 and stopped again.
+Message 43 from Hugo, day 22: the same file worked last month, when it had 2591 fewer rows.
+Message 44 from Support, day 23: support asked for the file, and the customer sent a copy with 2628 rows removed.
+Message 45 from Hugo, day 23: the import stopped at row 2665 with no message.
+Message 46 from Support, day 24: a smaller file with 2702 rows went through, but the dates came out as text.
+Message 47 from Hugo, day 24: after clearing the browser cache the import got to row 2739 and stopped again.
+Message 48 from Support, day 25: the same file worked last month, when it had 2776 fewer rows.
+Message 49 from Hugo, day 25: support asked for the file, and the customer sent a copy with 2813 rows removed.
+Message 50 from Support, day 26: the import stopped at row 2850 with no message.
+Message 51 from Hugo, day 26: a smaller file with 2887 rows went through, but the dates came out as text.
+Message 52 from Support, day 27: after clearing the browser cache the import got to row 2924 and stopped again.
+Message 53 from Hugo, day 27: the same file worked last month, when it had 2961 fewer rows.
+Message 54 from Support, day 28: support asked for the file, and the customer sent a copy with 2998 rows removed.
+Message 55 from Hugo, day 28: the import stopped at row 3035 with no message.
+Message 56 from Support, day 29: a smaller file with 3072 rows went through, but the dates came out as text.
+Message 57 from Hugo, day 29: after clearing the browser cache the import got to row 3109 and stopped again.
+Message 58 from Support, day 30: the same file worked last month, when it had 3146 fewer rows.
+Message 59 from Hugo, day 30: support asked for the file, and the customer sent a copy with 3183 rows removed.
+Message 60 from Support, day 31: the import stopped at row 3220 with no message.
+
+Escalation
+Team: engineering
+Priority: urgent
+"""
+expect = { customer = "Hugo Lindqvist", product = "Data import", category = "bug", team = "engineering", priority = "urgent" }

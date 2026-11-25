@@ -6,6 +6,8 @@
     python -m lha.run --seed 42 --crashes 0.05  # crash workers and the coordinator
     python -m lha.run --seed 42 --hosts 200 --coordinators 4 --workers 16,16
     python -m lha.run --domain research --seed 42   # verified research on the mock web
+    python -m lha.run --domain tickets          # a domain loaded from configuration (lha domains)
+    python -m lha.run --domain-file my.toml     # a domain from any file of configuration
     python -m lha.run --question "..."            # verified research on the real web (a real model)
     python -m lha.run --question "..." --detach   # the same in the background (see: lha status)
     python -m lha.run --seed 42 --model anthropic:claude-sonnet-5-5  # a real model, opt-in
@@ -54,12 +56,14 @@ from lha.config import (
 )
 from lha.core.agent import AUTO, FAKE, resolve_model
 from lha.core.coordinator import progress_line
-from lha.core.domain import Domain, create_start_tasks, get_domain
+from lha.core.domain import Domain, create_start_tasks, domain_of, get_domain
 from lha.core.scoring import Score, score_session
 from lha.db import crud, init_schema, make_engine
 from lha.db.migrate import schema_problem
 from lha.db.models import events, sessions, tasks
 from lha.domains import DOMAINS
+from lha.domains.config import find_spec, register
+from lha.domains.config.spec import SpecError, load_spec
 from lha.ids import uuid7
 from lha.machines import advertised_host, is_loopback, local_address, machine_name, machine_of, new_crew
 
@@ -149,7 +153,7 @@ class Supervisor:
     async def start(self) -> None:
         s = self.session
         if not self.join:
-            if get_domain(s.domain).world_process(s):  # otherwise the tools reach their world themselves
+            if domain_of(s).world_process(s):  # otherwise the tools reach their world themselves
                 self.world = await start_world(
                     s.domain, s.seed, s.n_hosts, s.fault_rate, s.goal_kind, self.listen
                 )
@@ -215,7 +219,7 @@ class Supervisor:
         don't fail the tasks they would take, and they start again once the
         world answers, at whatever address the resume gave it."""
         last_progress = last_probe = time.monotonic()
-        needs_world = get_domain(self.session.domain).world_process(self.session)
+        needs_world = domain_of(self.session).world_process(self.session)
         misses, waiting = 0, False
         async with httpx.AsyncClient(timeout=WORLD_PROBE_SECONDS) as client:
             while True:
@@ -370,8 +374,8 @@ def world_kind(args: argparse.Namespace) -> str:
 
 async def create_session(engine, args: argparse.Namespace) -> UUID:
     sid = uuid7()
-    domain = get_domain(args.domain)
     kind = world_kind(args)
+    domain = get_domain(args.domain, world=kind)
     world = domain.make_world(args.seed, args.hosts, args.goal) if kind == "mock" else None
     params = domain.prepare(sid, world, args)
     start = domain.start(world)
@@ -472,7 +476,7 @@ def join_problem(session: Row, machine: str) -> str | None:
     home = session.home_machine
     if home is None:
         return f"session {session.id} has no home machine yet, so start or resume it before joining it"
-    domain = get_domain(session.domain)
+    domain = domain_of(session)
     if home == machine:
         return None  # more workers on the home machine itself, which has everything
     url = session.world_url or ""
@@ -584,7 +588,7 @@ async def main(args: argparse.Namespace) -> int:
         if args.detach:
             return _detached(sid, args)
 
-    workers = worker_counts(get_domain(session.domain).roles, args.workers)
+    workers = worker_counts(domain_of(session).roles, args.workers)
     deadline = time.time() + time_limit(args.max_seconds, session.model)
     listen = args.listen or session.world_listen or LISTEN  # a resume listens where the run did
     sup = Supervisor(
@@ -649,7 +653,7 @@ async def join(engine, args: argparse.Namespace) -> int:
     if problem := model_problem(session.model):
         print(f"[supervisor] cannot join on the model {session.model!r}: {problem}")
         return 2
-    domain = get_domain(session.domain)
+    domain = domain_of(session)
     roles = joined_roles(domain, home=session.home_machine == args.machine)
     workers = {r: n for r, n in worker_counts(domain.roles, args.workers).items() if r in roles}
     sup = Supervisor(
@@ -746,7 +750,7 @@ def time_limit(max_seconds: float | None, model: str) -> float:
 def real_world_problem(args: argparse.Namespace) -> str | None:
     """Why a run on the real web (--question) or on a real repository (--repo)
     can't start, or None when it can, or when it runs in a mock world."""
-    domain = get_domain(args.domain)
+    domain = get_domain(args.domain, world=world_kind(args))
     for flag, given, allowed in (
         ("--question", args.question, domain.real_web),
         ("--repo", args.repo, domain.real_repo),
@@ -755,6 +759,8 @@ def real_world_problem(args: argparse.Namespace) -> str | None:
         if given and not allowed:
             return f"{args.domain} doesn't run that way, so it takes no {flag}"
     if world_kind(args) == "mock":
+        if not domain.mock_world:
+            return f"{args.domain} has no documents of its own, so it takes --docs with a folder of them"
         return None
     if args.model == FAKE:
         return (
@@ -767,7 +773,7 @@ def real_world_problem(args: argparse.Namespace) -> str | None:
         return "--fetch provider has the model provider fetch every page, so it needs ANTHROPIC_API_KEY"
     if args.repo and "{item}" not in shlex.split(args.check or ""):
         return "--repo needs --check, the command that must pass, with {item} as a word where one item goes"
-    if args.docs and not (args.fields or "").strip(" ;"):
+    if args.docs and args.domain == "extract" and not (args.fields or "").strip(" ;"):
         return "--docs needs --fields, the fields to find, such as 'invoice number; total: the amount to pay'"
     return None
 
@@ -792,12 +798,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.join and args.detach:
         parser.error("--join stays in the foreground, so it takes no --detach")
+    if args.domain_file:
+        try:
+            spec = load_spec(Path(args.domain_file).expanduser())
+        except SpecError as e:
+            parser.error(str(e))
+        if args.domain not in (None, spec.name):
+            parser.error(f"--domain {args.domain} and --domain-file {args.domain_file} name two domains")
+        register(spec)  # for this process, which creates the session, and the session keeps it
+        args.domain = spec.name
     if args.domain is None:
         args.domain = (
             "research" if args.question else "code" if args.repo else "extract" if args.docs else "audit"
         )
+    if args.domain not in DOMAINS:
+        try:
+            found = find_spec(args.domain)
+        except SpecError as e:
+            parser.error(str(e))
+        if found is None:
+            parser.error(
+                f"there is no domain {args.domain!r}, among {', '.join(sorted(DOMAINS))} "
+                "or the files on the search path (see lha domains)"
+            )
     if args.hosts is None:
-        args.hosts = DOMAINS[args.domain].default_size
+        args.hosts = get_domain(args.domain).default_size
     args.model = resolve_model(args.model)
     real = args.model != FAKE
     if args.window is None:
@@ -809,7 +834,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--domain", choices=sorted(DOMAINS), help="what the agents work on (default: audit)")
+    p.add_argument(
+        "--domain",
+        help=f"what the agents work on, one of {', '.join(sorted(DOMAINS))} or a domain from configuration, "
+        "found by its name (see lha domains), where the default is audit",
+    )
+    p.add_argument("--domain-file", metavar="PATH", help="a domain from configuration, from this TOML file")
     p.add_argument(
         "--question",
         help="research this question on the real web, with a real model (the domain is then research)",

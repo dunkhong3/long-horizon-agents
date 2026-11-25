@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from lha.config import HEARTBEAT_SECONDS, IDLE_MAX_SECONDS, LEASE_SECONDS, POLL_SECONDS
 from lha.core.agent import AgentContext
 from lha.core.context import ContextOverflow, build_packet
-from lha.core.domain import get_domain
+from lha.core.domain import domain_of
 from lha.core.tools import ToolFailure
 from lha.db import crud, make_engine
 from lha.db.models import events, sessions
@@ -55,7 +55,7 @@ class Worker:
     async def run(self) -> None:
         async with self.engine.connect() as conn:
             self.session = await crud.get_session(conn, self.session_id)
-        self.domain = get_domain(self.session.domain)
+        self.domain = domain_of(self.session)
         listener = None
         if self.session.wakeups == "notify":
             listener = Listener("lha_ready", f"{self.session_id}:{self.role}")

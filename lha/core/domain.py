@@ -7,7 +7,8 @@ documents. A domain supplies the rest, which is its mock world, its task
 types with their schemas, roles and agents, its tools, and the rules the
 coordinator follows for its results. Four domains live in lha/domains, the
 replica audit, verified research, code work and batch extraction, and they
-share every line of the core.
+share every line of the core, and a domain can also be loaded from a file
+of configuration, as a pipeline of stages over documents (lha/domains/config).
 """
 
 import hashlib
@@ -79,6 +80,7 @@ class Domain:
     gets when it has no use for a mechanism, such as splitting."""
 
     name: str
+    description: str = ""  # one line, for lha domains
     roles: tuple[str, ...]  # worker roles, one process or more each
     task_types: dict[str, TaskType]
     report_type: str  # the task type that writes the final report
@@ -91,6 +93,7 @@ class Domain:
     real_web: bool = False
     real_repo: bool = False
     real_docs: bool = False
+    mock_world: bool = True  # whether it has a mock world, which a domain from configuration may not
 
     # --- the world ----------------------------------------------------------
 
@@ -271,7 +274,20 @@ async def create_start_tasks(
             await crud.add_deps(conn, session_id, new, [(ids[key], required) for key, required in deps])
 
 
-def get_domain(name: str) -> Domain:
+def get_domain(name: str, session: Row | None = None, world: str = "mock") -> Domain:
+    """The domain a run works in. A built-in domain is found by its name, and
+    a domain loaded from configuration is built from the spec its session
+    keeps, so every process works from Postgres alone, or, for a run that
+    hasn't started yet, from its file, for the world the run will be in."""
     from lha.domains import DOMAINS
 
-    return DOMAINS[name]
+    if name in DOMAINS:
+        return DOMAINS[name]
+    from lha.domains.config import config_domain, session_domain
+
+    return session_domain(session) if session is not None else config_domain(name, world)
+
+
+def domain_of(session: Row) -> Domain:
+    """The domain of a session, whichever kind it is."""
+    return get_domain(session.domain, session)

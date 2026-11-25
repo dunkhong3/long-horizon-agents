@@ -14,7 +14,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from lha.core.domain import Domain, get_domain
+from lha.core.domain import Domain, domain_of
 from lha.core.schemas import VERIFIED
 from lha.db import crud
 from lha.db.models import events, tasks
@@ -31,7 +31,7 @@ class Score:
 async def score_session(engine: AsyncEngine, session_id: UUID) -> Score:
     async with engine.connect() as conn:
         session = await crud.get_session(conn, session_id)
-        domain = get_domain(session.domain)
+        domain = domain_of(session)
         world = (
             domain.make_world(session.seed, session.n_hosts, session.goal_kind)
             if session.world == "mock"

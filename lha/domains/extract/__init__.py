@@ -63,6 +63,7 @@ def parse_fields(spec: str) -> list[dict[str, str]]:
 
 class ExtractDomain(Domain):
     name = "extract"
+    description = "a table of fields from a folder of documents, each value quoted"
     roles = ("reader", "writer")
     task_types = {
         "extract_doc": TaskType(

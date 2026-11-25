@@ -52,7 +52,7 @@ from lha.config import (
     STALL_STEPS,
 )
 from lha.core.agent import FAKE
-from lha.core.domain import Domain, Rejected, create_task, get_domain
+from lha.core.domain import Domain, Rejected, create_task, domain_of
 from lha.core.schemas import SUPERSEDED
 from lha.db import crud, make_engine
 from lha.db.models import events, facts, sessions, tasks
@@ -98,7 +98,7 @@ class Coordinator:
     async def load(self) -> None:
         async with self.engine.connect() as conn:
             self.session = await crud.get_session(conn, self.sid)
-        self.domain = get_domain(self.session.domain)
+        self.domain = domain_of(self.session)
 
     # --- main loop ----------------------------------------------------------
 
@@ -669,7 +669,7 @@ async def progress_line(engine: AsyncEngine, sid: UUID) -> str:
         steps = await crud.step_count(conn, sid)
         q = select(tasks.c.status, func.count()).where(tasks.c.session_id == sid).group_by(tasks.c.status)
         by_status = dict((await conn.execute(q)).all())
-        extra = await get_domain(session.domain).progress(conn, sid)
+        extra = await domain_of(session).progress(conn, sid)
         cost = await crud.cost_usd(conn, sid) if session.model != FAKE else None
     active = sum(by_status.get(s, 0) for s in ACTIVE)
     line = (

@@ -1,4 +1,5 @@
-"""The domains the core can run, by name."""
+"""The domains built into the code, by name, while a domain loaded from
+configuration is found by lha/domains/config and built from its file."""
 
 from lha.domains.audit import AUDIT
 from lha.domains.code import CODE
