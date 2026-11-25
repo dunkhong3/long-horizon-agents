@@ -42,8 +42,11 @@ instructions = "Route the ticket to the team that should answer it, and say how 
   name = "priority"
   one_of = ["low", "normal", "urgent"]
 
+# The writer only sees the counts, which say how much was read and not what
+# each ticket holds, so its instructions ask for what the counts can tell,
+# and the table under its summary is what says where each ticket went.
 [report]
-instructions = "Say how many tickets went to each team, and which ones are urgent."
+instructions = "Say in two or three sentences how many tickets were read, and how many values are missing or in conflict."
 
 [[document]]
 name = "ticket-001.txt"

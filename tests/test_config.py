@@ -58,6 +58,9 @@ def test_the_example_loads_with_its_stages_roles_and_instructions():
     assert all(d.expect for d in spec.documents)
     text = stage_instructions(spec, spec.stage("route"))
     assert "'engineering', 'finance', 'product', 'support'" in text and "Route the ticket" in text
+    # a judged option is still null when the document says nothing about it, which a real
+    # model otherwise fills with a usual value, such as a priority of 'normal'
+    assert "null when the document says nothing about it" in text
     assert parse_spec(spec.dump()) == spec  # what a session keeps loads back as it was
 
 

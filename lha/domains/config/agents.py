@@ -44,8 +44,9 @@ def _describe(f: FieldSpec) -> str:
     line = f"- {f.name}" + (f", {f.form}" if f.form else "")
     if f.one_of:
         line += (
-            f". It is one of {', '.join(repr(o) for o in f.one_of)}, which may be your judgement, "
-            "with the sentence it rests on as its quote"
+            f". It is one of {', '.join(repr(o) for o in f.one_of)}, which may be your judgement "
+            "from what the document says, with the sentence it rests on as its quote, but it is "
+            "null when the document says nothing about it, and not a usual value you assume"
         )
     else:
         line += ", in the words of its quote"
