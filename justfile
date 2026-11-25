@@ -17,6 +17,13 @@ db-up:
 up:
     docker compose up --build --exit-code-from lha
 
+# a run on two containers, where the second joins the first one's run
+up-join:
+    docker compose --profile join build home helper
+    docker compose --profile join up --detach helper
+    docker compose --profile join run --rm --use-aliases home
+    docker compose --profile join logs helper
+
 # bring the database to the newest schema (every run also does this)
 migrate *args:
     uv run python -m lha.db.migrate {{args}}

@@ -30,7 +30,7 @@ sessions = Table(
     "sessions",
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
-    Column("domain", Text, nullable=False),  # 'audit' or 'research'
+    Column("domain", Text, nullable=False),  # 'audit', 'research', 'code' or 'extract'
     Column("seed", Integer, nullable=False),
     Column("n_hosts", Integer, nullable=False),  # the size of the world (hosts, or sources)
     Column("fault_rate", Float, nullable=False),
@@ -44,8 +44,14 @@ sessions = Table(
     Column("budget_usd", Float),  # what real model calls may cost in all, or no limit
     Column(
         "world", Text, nullable=False, server_default="mock"
-    ),  # 'mock', 'web' or 'repo' (see Domain.world_kind)
+    ),  # 'mock', 'web', 'repo' or 'docs' (see world_kind in lha/run.py)
     Column("params", JSONB, nullable=False, server_default="{}"),  # what the domain keeps, e.g. a repository
+    # The machine whose supervisor runs the coordinators and holds the
+    # session's files, where the mock world can be reached while it runs,
+    # and the address it listens on, which a resume keeps (see --listen).
+    Column("home_machine", Text),
+    Column("world_url", Text),
+    Column("world_listen", Text),
     Column("goal", Text, nullable=False),
     Column("start_points", JSONB, nullable=False),  # what the agents start from, e.g. hosts
     Column("status", Text, nullable=False),  # running | succeeded | failed
@@ -63,7 +69,7 @@ events = Table(
     Column("session_id", UUID(as_uuid=True), ForeignKey("sessions.id"), nullable=False),
     Column("task_id", UUID(as_uuid=True)),
     Column("attempt", Integer),
-    Column("actor", Text, nullable=False),  # 'coordinator' or a worker name
+    Column("actor", Text, nullable=False),  # 'coordinator', 'supervisor' or a worker name
     Column("kind", Text, nullable=False),  # model_call, tool_call, decision, ...
     Column("payload", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), **CREATED_AT),
@@ -82,6 +88,9 @@ tasks = Table(
     Column("role", Text, nullable=False),
     Column("resource", Text),  # what it works on (e.g. a host), for the breaker and the partition
     Column("partition", Integer, nullable=False),  # which coordinator decides its results
+    # Whether it needs files only the session's home machine has, such as a
+    # git workspace or a folder of documents, so only that machine takes it.
+    Column("local", Boolean, nullable=False, server_default=text("false")),
     Column("input", JSONB, nullable=False),
     Column("scope", JSONB, nullable=False),  # which facts the context builder selects
     # waiting|ready|leased|submitted|succeeded|failed|split|cancelled, where a

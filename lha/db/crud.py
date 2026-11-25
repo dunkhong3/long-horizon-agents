@@ -78,6 +78,21 @@ async def session_status(conn: AsyncConnection, session_id: UUID) -> str:
     return (await conn.execute(q)).scalar_one()
 
 
+async def session_machines(conn: AsyncConnection, session_id: UUID) -> list[str]:
+    """The machines that work on a session, which are its home first and then
+    each machine that joined it (python -m lha.run --join), in that order."""
+    home = (
+        await conn.execute(select(sessions.c.home_machine).where(sessions.c.id == session_id))
+    ).scalar_one()
+    q = (
+        select(events.c.payload)
+        .where(events.c.session_id == session_id, events.c.kind == "machine_joined")
+        .order_by(events.c.created_at)
+    )
+    joined = [payload["machine"] for (payload,) in (await conn.execute(q)).all()]
+    return list(dict.fromkeys(m for m in (home, *joined) if m))
+
+
 # --- tasks --------------------------------------------------------------------
 
 
@@ -95,6 +110,7 @@ async def create_task(
     parent_task_id: UUID | None = None,
     delay_seconds: float = 0.0,
     waiting: bool = False,
+    local: bool = False,
 ) -> UUID | None:
     """Create a task unless one with the same task_key already exists.
 
@@ -117,6 +133,7 @@ async def create_task(
             input=inp,
             scope=scope,
             status="waiting" if waiting else "ready",
+            local=local,
             attempt=1,
             max_attempts=MAX_ATTEMPTS,
             not_before=func.now() + timedelta(seconds=delay_seconds) if delay_seconds else None,
@@ -200,16 +217,23 @@ async def release_waiting(conn: AsyncConnection, session_id: UUID, partition: in
     return list((await conn.execute(RELEASE_SQL, {"sid": session_id, "p": partition})).all())
 
 
+# A local task needs files only the session's home machine has, so only a
+# worker there takes it, and a session with no home lets any worker take it.
+HERE = """(NOT local OR EXISTS (SELECT 1 FROM sessions s WHERE s.id = :sid
+              AND (s.home_machine IS NULL OR s.home_machine = :machine)))"""
+
 # One statement, so one transaction. It picks the oldest ready task for this
-# role, locks it (skipping rows other workers have locked), and leases it.
+# role that this machine may take, locks it (skipping rows other workers
+# have locked), and leases it.
 CLAIM_SQL = text(
-    """
+    f"""
     UPDATE tasks SET status = 'leased', leased_by = :worker,
            lease_expires_at = now() + make_interval(secs => :lease)
      WHERE id = (
        SELECT id FROM tasks
         WHERE session_id = :sid AND status = 'ready' AND role = :role
           AND (not_before IS NULL OR not_before <= now())   -- respect backoff
+          AND {HERE}
         ORDER BY created_at, id
         LIMIT 1
         FOR UPDATE SKIP LOCKED)
@@ -218,22 +242,28 @@ CLAIM_SQL = text(
 )
 
 
-async def claim_task(conn: AsyncConnection, session_id: UUID, role: str, worker: str) -> Row | None:
-    params = {"worker": worker, "lease": float(LEASE_SECONDS), "sid": session_id, "role": role}
+async def claim_task(
+    conn: AsyncConnection, session_id: UUID, role: str, worker: str, machine: str | None = None
+) -> Row | None:
+    params = {"worker": worker, "lease": float(LEASE_SECONDS), "sid": session_id, "role": role,
+              "machine": machine}  # fmt: skip
     return (await conn.execute(CLAIM_SQL, params)).one_or_none()
 
 
-async def seconds_until_due(conn: AsyncConnection, session_id: UUID, role: str) -> float | None:
-    """How long until the next ready task for this role may be claimed, or None
-    if there is none. A worker with nothing to do sleeps at most this long,
-    because no notification is sent when a backoff simply runs out."""
+async def seconds_until_due(
+    conn: AsyncConnection, session_id: UUID, role: str, machine: str | None = None
+) -> float | None:
+    """How long until the next ready task for this role that this machine may
+    take can be claimed, or None if there is none. A worker with nothing to
+    do sleeps at most this long, because no notification is sent when a
+    backoff simply runs out."""
     q = text(
-        """
+        f"""
         SELECT extract(epoch FROM min(not_before) - now())
-          FROM tasks WHERE session_id = :sid AND status = 'ready' AND role = :role
+          FROM tasks WHERE session_id = :sid AND status = 'ready' AND role = :role AND {HERE}
         """
     )
-    due = (await conn.execute(q, {"sid": session_id, "role": role})).scalar_one()
+    due = (await conn.execute(q, {"sid": session_id, "role": role, "machine": machine})).scalar_one()
     return None if due is None else max(0.0, float(due))
 
 

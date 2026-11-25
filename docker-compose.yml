@@ -2,6 +2,14 @@
 # and `docker compose run --rm lha --domain research` runs anything else.
 # `docker compose up dashboard` serves the live dashboard on port 8000, and
 # `just db-up` starts only Postgres, for running the code on the host.
+# `just up-join` plays a run on two machines with the 'join' profile, where
+# the home container runs the coordinators and the mock world with no
+# workers for the first two roles, and the helper container joins its run
+# with workers of its own, so the run can only pass when the work crosses
+# from one container to the other. The helper starts first and waits for
+# the run, and the home runs with `docker compose run --use-aliases`, which
+# keeps its service name for the helper to reach it by and gives back its
+# exit code, while `up` would stop the home as soon as the helper is done.
 services:
   db:
     image: postgres:16
@@ -43,3 +51,30 @@ services:
       db:
         condition: service_healthy
     profiles: ["dashboard"]  # only started when asked for, so `docker compose up` stays one run
+
+  home:
+    build: .
+    command: ["--seed", "42", "--machine", "home", "--listen", "0.0.0.0", "--workers", "0,0"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://lha:lha@db:5432/lha
+      LHA_ADVERTISE_HOST: home  # the helper reaches the mock world by this service's name
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LHA_MODEL: ${LHA_MODEL:-auto}
+    volumes:
+      - ./runs:/app/runs
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["join"]
+
+  helper:
+    build: .
+    command: ["--join", "--wait", "120", "--machine", "helper", "--workers", "3,3"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://lha:lha@db:5432/lha
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LHA_MODEL: ${LHA_MODEL:-auto}
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["join"]

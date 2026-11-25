@@ -70,9 +70,17 @@ class CodeDomain(Domain):
             agents.CHECK_INSTRUCTIONS,
             network=True,
             rereads=True,
+            local=True,  # it runs the check in the workspace, which only the home machine has
         ),
         "fix_item": TaskType(
-            FixInput, FixOutput, "coder", agents.run_fix, agents.FIX_INSTRUCTIONS, network=True, rereads=True
+            FixInput,
+            FixOutput,
+            "coder",
+            agents.run_fix,
+            agents.FIX_INSTRUCTIONS,
+            network=True,
+            rereads=True,
+            local=True,
         ),
         "write_report": TaskType(
             ReportInput, ReportOutput, "writer", agents.run_report, agents.REPORT_INSTRUCTIONS

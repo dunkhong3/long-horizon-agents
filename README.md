@@ -66,6 +66,7 @@ echo 'DATABASE_URL=postgresql+asyncpg://lha:lha@localhost:5432/lha' > .env
 
 ```bash
 just up                               # Postgres and one full run, both in Docker
+just up-join                          # the same run on two containers, where the second joins it
 just install && just db-up
 just test                             # unit tests + full runs + crashes + resume
 just start --seed 42                  # full run, prints PASS/FAIL (~10 s)
@@ -101,6 +102,15 @@ uv run lha status                               # how the latest run is doing, a
 uv run lha report                               # what it found, with the pages and sentences behind it
 uv run lha list                                 # the latest runs
 uv run lha resume                               # continue the latest unfinished run
+```
+
+### More than one machine
+
+Workers share nothing but Postgres, so other machines that reach the same Postgres can lend their workers to a run ('Workers on more than one machine' in [docs/design.md](docs/design.md); `lha/run.py`, lines 619–679). The machine that starts the run stays its home, with the coordinators, the mock world and any files the run works on, and it has to start the run with `--listen 0.0.0.0` so the mock world can be reached from the others, while every other machine runs `lha join`, which starts workers there until the run ends. A machine is named by `LHA_MACHINE`, or else by its hostname, and the names have to differ, and when the hostname isn't how the other machines reach the home, `LHA_ADVERTISE_HOST` says how they do. Code work and extraction need the files of the home machine for every task but the report, so only the audit and research runs take other machines, and `lha status` names the machines of a run.
+
+```bash
+just start --seed 7 --hosts 200 --goal all --listen 0.0.0.0   # on the home machine
+uv run lha join --workers 8,8                                   # on each other machine, for the latest run
 ```
 
 An assistant such as Claude Code can hand long tasks to the system by itself, through an MCP server, which is a process that offers tools to an assistant over the Model Context Protocol (`lha/mcp_server.py`). Once it is added with the command below, run in this folder, every Claude Code session can start research, code work or an extraction, check on it and read the report, while the key and the database come from this folder's `.env`.

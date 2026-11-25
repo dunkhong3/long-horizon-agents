@@ -25,8 +25,9 @@ just fmt       # auto-fix
 just test      # pytest (needs Postgres)
 just start     # run the system (--domain audit, research, code or extract)
 just research  # research a question on the real web, which needs a real model
-uv run lha     # start runs in the background, follow them, read reports, or serve MCP
+uv run lha     # start runs in the background, follow them, read reports, join them, or serve MCP
 just up        # Postgres and one full run, both in docker compose
+just up-join   # the same run on two containers, where the second joins the first one's run
 just dashboard # a live view of every run, on port 8000
 just migrate   # upgrade the schema; `just migrate revision "msg"` writes a new one
 just demo      # full run + crash at step 120 + resume

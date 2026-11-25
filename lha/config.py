@@ -68,6 +68,12 @@ COORDINATOR_IDLE_SECONDS = 0.5  # the same for a coordinator, which also sweeps 
 GOAL_CHECK_SECONDS = 0.5  # how often the leader checks the goal, the budget and stalls
 ALL_DRIFTS = 3  # drifts planted for the 'find all drifts' goal
 
+# Workers on more than one machine (see 'Workers on more than one machine'
+# in docs/design.md), where a joined machine's workers wait while the run's
+# mock world doesn't answer, as when its home machine is down.
+WORLD_PROBE_SECONDS = 0.5  # how often a joined machine asks the mock world, and how long it waits
+WORLD_MISSES = 2  # unanswered asks in a row before its workers wait
+
 # Crashes, where the supervisor gives up on a coordinator that crashes this
 # many times in a row without committing anything in between.
 CRASH_LOOP_LIMIT = 3

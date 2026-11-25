@@ -77,13 +77,14 @@ def main() -> None:
     parser.add_argument("--goal", default="one")
     parser.add_argument("--fault-rate", type=float, default=DEFAULT_FAULT_RATE)
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--host", default="127.0.0.1", help="the address to listen on, 0.0.0.0 for every one")
     args = parser.parse_args()
 
     _exit_when_orphaned()
     domain = get_domain(args.domain)
     world = domain.make_world(args.seed, args.size, args.goal)
     app = domain.create_app(world, args.fault_rate)
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning", access_log=False)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
 
 
 def _exit_when_orphaned() -> None:

@@ -57,6 +57,9 @@ class TaskType:
     instructions: str = ""
     network: bool = False  # whether its failures count against its resource's circuit breaker
     rereads: bool = False  # whether it reads again on purpose, so its reads are never 'repeated'
+    # Whether it needs files only the session's home machine has, such as a
+    # git workspace or a folder of documents, so no other machine takes it.
+    local: bool = False
 
 
 @dataclass(frozen=True)
@@ -244,6 +247,7 @@ async def create_task(
         parent_task_id=parent_task_id,
         delay_seconds=delay_seconds,
         waiting=waiting,
+        local=domain.task_types[task_type].local,
     )
 
 

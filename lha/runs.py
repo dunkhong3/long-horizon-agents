@@ -9,7 +9,6 @@ after the machine restarted, which --resume continues.
 """
 
 import os
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -18,7 +17,7 @@ from sqlalchemy import String, cast, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from lha.core.agent import FAKE
-from lha.core.coordinator import progress_line
+from lha.core.coordinator import db_now, progress_line
 from lha.db import crud
 from lha.db.models import sessions
 from lha.run import reap_detached
@@ -71,7 +70,8 @@ async def run_status(engine: AsyncEngine, sid: UUID) -> dict[str, Any]:
         session = await crud.get_session(conn, sid)
         steps = await crud.step_count(conn, sid)
         cost = await crud.cost_usd(conn, sid) if session.model != FAKE else None
-    end = session.finished_at or datetime.now(UTC)
+        machines = await crud.session_machines(conn, sid)
+        end = session.finished_at or await db_now(conn)
     return {
         "session_id": str(sid),
         "domain": session.domain,
@@ -80,6 +80,7 @@ async def run_status(engine: AsyncEngine, sid: UUID) -> dict[str, Any]:
         "goal": session.goal,
         "status": session.status,
         "supervisor": supervisor_state(sid) if session.status == "running" else None,
+        "machines": machines,
         "steps": steps,
         "cost_usd": round(cost, 4) if cost is not None else None,
         "budget_usd": session.budget_usd,

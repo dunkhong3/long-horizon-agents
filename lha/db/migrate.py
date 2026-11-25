@@ -10,6 +10,11 @@ upgraded from there.
     python -m lha.db.migrate                    # upgrade to the newest revision
     python -m lha.db.migrate revision "add x"   # write a new revision from models.py
     python -m lha.db.migrate check              # fail if models.py and the migrations differ
+
+A machine that joins a run from elsewhere (python -m lha.run --join) never
+upgrades, because the machines already at work on the run use the schema
+as it is, so it only checks that the database is at the newest revision
+this code knows (see schema_problem).
 """
 
 import argparse
@@ -18,6 +23,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection
@@ -52,6 +58,25 @@ async def upgrade(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.execute(text("SELECT pg_advisory_xact_lock(hashtext('lha:migrate'))"))
         await conn.run_sync(_upgrade)
+
+
+def _revisions(conn: Connection) -> tuple[str | None, str | None]:
+    current = MigrationContext.configure(conn).get_current_revision()
+    return current, ScriptDirectory.from_config(config(conn)).get_current_head()
+
+
+async def schema_problem(engine: AsyncEngine) -> str | None:
+    """Why the database's schema isn't the newest one this code knows, or None when it is."""
+    async with engine.connect() as conn:
+        current, head = await conn.run_sync(_revisions)
+    if current == head:
+        return None
+    if current is None:
+        return "the database has no schema yet, so start the run on its home machine first"
+    return (
+        f"the database's schema is at revision {current or 'none'} while this code's is at {head}, "
+        "so run the same version of lha as the run's home machine"
+    )
 
 
 async def main(args: argparse.Namespace) -> None:

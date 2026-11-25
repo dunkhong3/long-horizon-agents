@@ -31,7 +31,7 @@ import asyncio
 import contextlib
 import sys
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -345,7 +345,8 @@ class Coordinator:
         if kind == "context_overflow" and await self._split(conn, task, reason):
             return
         if kind not in PERMANENT_ERRORS and task.attempt < task.max_attempts:
-            not_before = probe_at or _now() + timedelta(seconds=BACKOFF_BASE_SECONDS * 2**task.attempt)
+            backoff = timedelta(seconds=BACKOFF_BASE_SECONDS * 2**task.attempt)
+            not_before = probe_at or await db_now(conn) + backoff
             await conn.execute(
                 update(tasks)
                 .where(tasks.c.id == task.id)
@@ -393,7 +394,7 @@ class Coordinator:
             return await self.decide(conn, task, "replan", "report failed; session failed")
         delay = NEW_ROUND_DELAY_SECONDS
         if probe_at is not None:
-            delay = max(delay, (probe_at - _now()).total_seconds())
+            delay = max(delay, (probe_at - await db_now(conn)).total_seconds())
         await self.domain.replan(self, conn, task, kind, delay, probe=probe_at is not None)
         await self._settle_replacement(conn, task)
 
@@ -472,7 +473,7 @@ class Coordinator:
                 until = datetime.fromisoformat(breaker.value["open_until"])
                 if not probe:
                     until += timedelta(seconds=BREAKER_COOLDOWN_SECONDS)
-                delay = max(delay, (until - _now()).total_seconds())
+                delay = max(delay, (until - await db_now(conn)).total_seconds())
         deps = [(d, True) for d in needs] + [(d, False) for d in after if d not in needs]
         new = await create_task(
             conn, self.sid, self.domain, task_type, inp, parent, delay, self.session.partitions,
@@ -504,7 +505,7 @@ class Coordinator:
             value = {"state": "closed", "failures": failures, "open_until": None}
             await crud.upsert_fact(conn, self.sid, subject, BREAKER, value, source_task_id=task.id)
             return None
-        until = _now() + timedelta(seconds=BREAKER_COOLDOWN_SECONDS)
+        until = await db_now(conn) + timedelta(seconds=BREAKER_COOLDOWN_SECONDS)
         value = {"state": "open", "failures": failures, "open_until": until.isoformat()}
         await crud.upsert_fact(conn, self.sid, subject, BREAKER, value, source_task_id=task.id)
         # Hold back everything else waiting for this resource.
@@ -638,7 +639,7 @@ class Coordinator:
         if task is not None and task.status == "submitted" and task.submitted_at is not None:
             # How long the result waited for the coordinator, which is what
             # grows first when one coordinator can't keep up.
-            payload["latency_ms"] = round((_now() - task.submitted_at).total_seconds() * 1000)
+            payload["latency_ms"] = round((await db_now(conn) - task.submitted_at).total_seconds() * 1000)
         task_id, attempt = (task.id, task.attempt) if task else (None, None)
         await crud.log_event(conn, self.sid, ACTOR, "decision", payload, task_id, attempt)
 
@@ -651,8 +652,13 @@ def _breaker_subject(resource: str) -> str:
     return f"resource:{resource}"
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
+async def db_now(conn: AsyncConnection) -> datetime:
+    """The database's clock as it reads at this moment (clock_timestamp, and
+    not now, which stays at the start of the transaction). Every time a task
+    is compared against comes from it, so a process on another machine than
+    Postgres, whose own clock may be off, still holds a backoff or a breaker
+    for as long as it should."""
+    return (await conn.execute(select(func.clock_timestamp()))).scalar_one()
 
 
 async def progress_line(engine: AsyncEngine, sid: UUID) -> str:

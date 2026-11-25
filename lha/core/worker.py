@@ -1,9 +1,12 @@
 """A worker process, which claims a task, runs its agent, submits the result and repeats.
 
-    python -m lha.core.worker --session <id> --role discovery --name discovery-1
+    python -m lha.core.worker --session <id> --role discovery --name mac-1a2b/discovery-1 --machine mac
 
 Workers share nothing with each other or with the coordinator except
-Postgres. They write `events` (every model and tool call) and their own
+Postgres, so they can run on any machine that reaches it, where a task that
+needs the session's files is only taken on the session's home machine, and
+the mock world's address is read from the session, which a resumed run
+changes. They write `events` (every model and tool call) and their own
 task's `result`, and they never write facts, because deciding what a result
 means is the coordinator's job.
 """
@@ -28,9 +31,10 @@ from lha.core.context import ContextOverflow, build_packet
 from lha.core.domain import get_domain
 from lha.core.tools import ToolFailure
 from lha.db import crud, make_engine
-from lha.db.models import events
+from lha.db.models import events, sessions
 from lha.db.notify import Listener
 from lha.faults import roll
+from lha.machines import machine_name
 
 
 class LeaseLost(Exception):
@@ -38,12 +42,14 @@ class LeaseLost(Exception):
 
 
 class Worker:
-    def __init__(self, engine: AsyncEngine, session_id: UUID, role: str, name: str, world_url: str):
+    def __init__(self, engine: AsyncEngine, session_id: UUID, role: str, name: str, machine: str):
         self.engine = engine
         self.session_id = session_id
         self.role = role
         self.name = name
-        self.world_url = world_url
+        self.machine = machine
+        self.world_url = ""
+        self.http: httpx.AsyncClient | None = None
         self.parent_pid = os.getppid()
 
     async def run(self) -> None:
@@ -54,17 +60,22 @@ class Worker:
         if self.session.wakeups == "notify":
             listener = Listener("lha_ready", f"{self.session_id}:{self.role}")
         claims = empty = 0
-        async with httpx.AsyncClient(base_url=self.world_url) as http, listener or contextlib.nullcontext():
-            self.http = http
-            while await self._session_running() and not self._orphaned():
-                async with self.engine.begin() as conn:
-                    task = await crud.claim_task(conn, self.session_id, self.role, self.name)
-                claims += 1
-                if task is None:
-                    empty += 1
-                    await self._idle(listener)
-                    continue
-                await self._handle(task)
+        async with listener or contextlib.nullcontext():
+            try:
+                while await self._session_running() and not self._orphaned():
+                    async with self.engine.begin() as conn:
+                        task = await crud.claim_task(
+                            conn, self.session_id, self.role, self.name, self.machine
+                        )
+                    claims += 1
+                    if task is None:
+                        empty += 1
+                        await self._idle(listener)
+                        continue
+                    await self._handle(task)
+            finally:
+                if self.http is not None:
+                    await self.http.aclose()
         # How often we asked for work and found none, which is what the
         # benchmark compares between polling and LISTEN/NOTIFY.
         stats = {"claims": claims, "empty_claims": empty, "wakeups": listener.wakeups if listener else 0}
@@ -78,7 +89,7 @@ class Worker:
             await asyncio.sleep(POLL_SECONDS)
             return
         async with self.engine.connect() as conn:
-            due = await crud.seconds_until_due(conn, self.session_id, self.role)
+            due = await crud.seconds_until_due(conn, self.session_id, self.role, self.machine)
         await listener.wait(IDLE_MAX_SECONDS if due is None else min(due, IDLE_MAX_SECONDS))
 
     def _orphaned(self) -> bool:
@@ -86,8 +97,17 @@ class Worker:
         return os.getppid() != self.parent_pid
 
     async def _session_running(self) -> bool:
+        """Whether the session still runs, which also follows its mock world,
+        because a resumed run starts the world again on a new address."""
         async with self.engine.connect() as conn:
-            return await crud.session_status(conn, self.session_id) == "running"
+            q = select(sessions.c.status, sessions.c.world_url).where(sessions.c.id == self.session_id)
+            status, world_url = (await conn.execute(q)).one()
+        if self.http is None or (world_url or "") != self.world_url:
+            if self.http is not None:
+                await self.http.aclose()
+            self.world_url = world_url or ""
+            self.http = httpx.AsyncClient(base_url=self.world_url)
+        return status == "running"
 
     async def _log(self, task: Row, kind: str, payload: dict[str, Any]) -> UUID:
         async with self.engine.begin() as conn:
@@ -213,7 +233,7 @@ def _error(kind: str, message: str) -> dict[str, Any]:
 async def main(args: argparse.Namespace) -> None:
     engine = make_engine(pool_size=2)  # many workers share one Postgres
     try:
-        await Worker(engine, UUID(args.session), args.role, args.name, args.world).run()
+        await Worker(engine, UUID(args.session), args.role, args.name, args.machine).run()
     finally:
         await engine.dispose()
 
@@ -223,7 +243,9 @@ if __name__ == "__main__":
     parser.add_argument("--session", required=True)
     parser.add_argument("--role", required=True, help="which tasks to claim, such as discovery")
     parser.add_argument("--name", required=True)
-    parser.add_argument("--world", default="", help="base URL of the mock world, or nothing on the real web")
+    parser.add_argument(
+        "--machine", default=machine_name(), help="this machine's name (default: LHA_MACHINE or the hostname)"
+    )
     try:
         asyncio.run(main(parser.parse_args()))
     except KeyboardInterrupt:

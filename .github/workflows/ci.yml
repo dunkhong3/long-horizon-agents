@@ -52,3 +52,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Postgres and one full run with docker compose
         run: docker compose up --build --exit-code-from lha
+      - name: A run on two containers, where the helper joins the home's run and does its work
+        shell: bash  # with pipefail, so a failed run fails the step
+        run: |
+          docker compose --profile join build home helper
+          docker compose --profile join up --detach helper
+          docker compose --profile join run --rm --use-aliases home | tee join.log
+          test "$(timeout 120 docker wait "$(docker compose --profile join ps --all --quiet helper)")" = 0
+          docker compose --profile join logs helper
+          grep -q "verdict=PASS" join.log && grep -q "machines: home (its home), helper" join.log

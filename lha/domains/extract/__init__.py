@@ -72,6 +72,7 @@ class ExtractDomain(Domain):
             agents.run_extract,
             agents.EXTRACT_INSTRUCTIONS,
             network=True,
+            local=True,  # it reads the folder, which only the home machine has
         ),
         "write_table": TaskType(
             TableInput, TableOutput, "writer", agents.run_table, agents.TABLE_INSTRUCTIONS

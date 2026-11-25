@@ -9,6 +9,7 @@
     lha status [SESSION]               how a run is doing (default: the latest)
     lha report [SESSION]               what a finished run found (default: the latest)
     lha resume [SESSION]               continue an unfinished run (default: the latest)
+    lha join [SESSION]                 lend this machine's workers to a run another machine started
     lha dashboard                      a live view of every run, on http://localhost:8000
     lha mcp                            an MCP server, so Claude Code can start and follow research
 
@@ -104,6 +105,12 @@ def _resume(args: argparse.Namespace, rest: list[str]) -> int:
     return _run(["--resume", str(sid), *rest]) if sid else 1
 
 
+def _join(args: argparse.Namespace, rest: list[str]) -> int:
+    # The supervisor finds the session itself, because finding it here would
+    # upgrade the schema, which a joining machine never does (lha/db/migrate.py).
+    return _run(["--join", args.session or "latest", *rest])
+
+
 def _run(argv: list[str]) -> int:
     from lha import run
 
@@ -145,6 +152,8 @@ def _status(args: argparse.Namespace, rest: list[str]) -> int:
     elif s["supervisor"] == "alive":
         line += ", in the background"
     print(line)
+    if len(s["machines"]) > 1:
+        print(f"machines: {s['machines'][0]} (its home), {', '.join(s['machines'][1:])}")
     print(s["progress"])
     if s["report_ready"]:
         print(f"report: lha report {sid}")
@@ -237,6 +246,9 @@ def _parser() -> argparse.ArgumentParser:
     ).add_argument("folder")
     command("start", _start, "start any run", True)
     command("resume", _resume, "continue an unfinished run", True).add_argument("session", nargs="?")
+    command(
+        "join", _join, "lend this machine's workers to a run that another machine started", True
+    ).add_argument("session", nargs="?")
     c = command("list", _list, "the latest runs")
     c.add_argument("--limit", type=int, default=10)
     c.add_argument("--json", action="store_true")
