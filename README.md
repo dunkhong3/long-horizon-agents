@@ -76,7 +76,7 @@ just start --seed 42 --crashes 0.05   # crash workers and the coordinator on pur
 just start --seed 7 --kill-at 120     # crash every process after step 120...
 just start --resume                   # ...and resume from Postgres
 just demo                             # a full run, then a crash at step 120 and a resume
-just bench                            # the system against a naive full-history agent (~6 min)
+just bench                            # the system against a naive full-history agent (~7 min)
 just scale                            # one big world with more workers and coordinators (~3 min)
 just dashboard                        # a live view of every run, on http://localhost:8000
 just start --domain research --goal all  # the second domain, verified research on a mock web
