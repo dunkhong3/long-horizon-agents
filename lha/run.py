@@ -541,6 +541,11 @@ def print_score(score: Score, sid: UUID, elapsed: float, machines: list[str] | N
 
 
 async def main(args: argparse.Namespace) -> int:
+    # What a supervisor prints is read as it comes, by a pipe, a test or the
+    # run.log of a run in the background, so every line goes out at once and
+    # none of it waits in a buffer until the run is over.
+    if reconfigure := getattr(sys.stdout, "reconfigure", None):
+        reconfigure(line_buffering=True)
     engine = make_engine()
     if args.join:
         try:

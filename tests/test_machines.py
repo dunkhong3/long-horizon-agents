@@ -26,7 +26,7 @@ from lha.domains.audit.tasks import DiscoverInput
 from lha.domains.code import CODE
 from lha.domains.code.tasks import CheckInput
 from lha.machines import advertised_host, is_loopback, local_address, machine_of, new_crew
-from tests.conftest import add_task, new_session
+from tests.conftest import add_task, new_session, session_in
 
 
 def test_a_worker_name_says_which_machine_it_belongs_to(monkeypatch):
@@ -226,7 +226,9 @@ def test_a_second_machine_joins_a_run_and_does_its_work(tmp_path):
     first two roles, so the run can only pass if the joining machine works.
     Both machines are this one under two names, which share the Postgres.
     The home's output goes to a file, because a pipe that nobody reads while
-    the joined machine works would fill up and stop the home's processes."""
+    the joined machine works would fill up and stop the home's processes, and
+    the session is found in it as soon as the home prints it, because the
+    supervisor writes every line out at once."""
     _own_hostname()
     cmd = [sys.executable, "-m", "lha.run", "--quiet", "--model", "fake"]
     alpha = ["--machine", "alpha", "--listen", "0.0.0.0", "--workers", "0,0"]
@@ -236,7 +238,7 @@ def test_a_second_machine_joins_a_run_and_does_its_work(tmp_path):
             [*cmd, "--seed", "131", "--chaos", "0.2", *alpha], stdout=out_file, stderr=out_file
         )
     try:
-        sid = _session_in(log)
+        sid = session_in(log)
         url = asyncio.run(_world_url(sid))
         if not asyncio.run(_answers_soon(url)):
             pytest.fail(_why_no_answer(url, home, log))
@@ -259,7 +261,7 @@ def test_a_second_machine_joins_a_run_and_does_its_work(tmp_path):
     assert machines == ["alpha", "beta"] and by_beta > 0
 
 
-def test_a_joined_machine_waits_through_a_crash_of_the_home_and_follows_the_resume():
+def test_a_joined_machine_waits_through_a_crash_of_the_home_and_follows_the_resume(tmp_path):
     """The home machine crashes with every process it had, while a joined
     machine's workers find the mock world gone and wait, and a resume
     without --listen still listens where the run did, so the joined
@@ -272,35 +274,28 @@ def test_a_joined_machine_waits_through_a_crash_of_the_home_and_follows_the_resu
     )  # fmt: skip
     assert crashed.returncode == 137, crashed.stdout + crashed.stderr
     sid = re.search(r"--resume ([0-9a-f-]+)", crashed.stdout).group(1)
-    joined = subprocess.Popen(
-        [*cmd, "--join", sid, "--machine", "beta", "--workers", "2,2"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    )  # fmt: skip
+    log = tmp_path / "joined.log"
+    with open(log, "w") as out_file:
+        joined = subprocess.Popen(
+            [*cmd, "--join", sid, "--machine", "beta", "--workers", "2,2"], stdout=out_file, stderr=out_file
+        )
     try:
-        lines = []
-        while "so this machine's workers wait for it" not in "".join(lines):
-            line = joined.stdout.readline()
-            assert line, "".join(lines)
-            lines.append(line)
+        for _ in range(300):
+            if "so this machine's workers wait for it" in log.read_text() or joined.poll() is not None:
+                break
+            time.sleep(0.1)
+        assert "so this machine's workers wait for it" in log.read_text(), log.read_text()
         resumed = subprocess.run(
             [*cmd, "--resume", sid, "--machine", "alpha"], capture_output=True, text=True, timeout=300
         )
-        out = "".join(lines) + joined.communicate(timeout=60)[0]
+        joined.wait(timeout=60)
     finally:
         joined.kill()
+    out = log.read_text()
     assert resumed.returncode == 0 and "verdict=PASS" in resumed.stdout, resumed.stdout + resumed.stderr
     assert "machines: alpha (its home), beta" in resumed.stdout
     assert joined.returncode == 0 and "so this machine's workers start again" in out, out
     assert "is over (succeeded)" in out
-
-
-def _session_in(log: Path) -> str:
-    """The session a supervisor writing to this file started, from its first line."""
-    for _ in range(300):
-        if found := re.search(r"session ([0-9a-f-]{36})", log.read_text()):
-            return found.group(1)
-        time.sleep(0.1)
-    raise AssertionError(log.read_text())
 
 
 def _why_no_answer(url: str, home: subprocess.Popen, log: Path) -> str:

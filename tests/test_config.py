@@ -20,7 +20,7 @@ from lha.domains.config import facts as F
 from lha.domains.config.agents import stage_instructions
 from lha.domains.config.spec import SpecError, load_spec, parse_spec
 from lha.domains.config.tasks import StageOutput
-from tests.conftest import new_session
+from tests.conftest import new_session, session_in
 
 SPEC = {
     "name": "forms",
@@ -254,13 +254,14 @@ def test_a_second_machine_joins_a_run_of_a_domain_from_configuration(tmp_path):
     path = tmp_path / "joined.toml"
     path.write_text(_toml(_copy(SPEC) | {"name": "joined"}))
     cmd = [sys.executable, "-m", "lha.run", "--quiet", "--model", "fake"]
-    home = subprocess.Popen(
-        [*cmd, "--domain-file", str(path), "--machine", "alpha", "--workers", "0,0,0"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    )  # fmt: skip
+    log = tmp_path / "home.log"
+    with open(log, "w") as out_file:
+        home = subprocess.Popen(
+            [*cmd, "--domain-file", str(path), "--machine", "alpha", "--workers", "0,0,0"],
+            stdout=out_file, stderr=out_file,
+        )  # fmt: skip
     try:
-        first = home.stdout.readline()
-        sid = re.search(r"session ([0-9a-f-]{36})", first).group(1)
+        sid = session_in(log)
         path.unlink()
         joined = subprocess.run(
             [*cmd, "--join", sid, "--wait", "30", "--machine", "beta"],
@@ -268,9 +269,10 @@ def test_a_second_machine_joins_a_run_of_a_domain_from_configuration(tmp_path):
             text=True,
             timeout=300,
         )
-        out = first + home.communicate(timeout=300)[0]
+        home.wait(timeout=300)
     finally:
         home.kill()
+    out = log.read_text()
     assert home.returncode == 0 and "verdict=PASS" in out and "machines: alpha (its home), beta" in out, out
     assert joined.returncode == 0 and "worked on 0 " not in joined.stdout, joined.stdout + joined.stderr
 

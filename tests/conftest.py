@@ -1,4 +1,7 @@
 import os
+import re
+import time
+from pathlib import Path
 
 import pytest_asyncio
 
@@ -32,6 +35,16 @@ async def new_session(engine, **overrides):
     async with engine.begin() as conn:
         await conn.execute(sessions.insert().values(**(values | overrides)))
     return sid
+
+
+def session_in(log: Path) -> str:
+    """The session a supervisor writing to this file started, from its first
+    line, which it prints as soon as the session exists."""
+    for _ in range(300):
+        if found := re.search(r"session ([0-9a-f-]{36})", log.read_text()):
+            return found.group(1)
+        time.sleep(0.1)
+    raise AssertionError(f"no session in {log}: {log.read_text()!r}")
 
 
 async def add_task(conn, sid, task_type, inp, partitions=1, domain=AUDIT):
