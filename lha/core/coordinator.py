@@ -44,6 +44,7 @@ from lha.config import (
     BACKOFF_BASE_SECONDS,
     BREAKER_COOLDOWN_SECONDS,
     BREAKER_THRESHOLD,
+    CLOCK_READ_SECONDS,
     COORDINATOR_IDLE_SECONDS,
     GOAL_CHECK_SECONDS,
     LOCK_WAIT_SECONDS,
@@ -94,6 +95,8 @@ class Coordinator:
         # replacement during the current split or replan.
         self._splitting: Row | None = None
         self._replaced: set[UUID] = set()
+        self._clock: tuple[datetime, float] | None = None  # the database's time, and ours when we read it
+        self._clock: tuple[datetime, float] | None = None  # the database's time, and ours when we read it
 
     async def load(self) -> None:
         async with self.engine.connect() as conn:
@@ -126,12 +129,15 @@ class Coordinator:
             while True:
                 async with self.engine.begin() as conn:
                     await self._sweep_expired_leases(conn)
-                    await self.settle_waiting(conn)
 
                 submitted = await self._submitted_task_ids()
                 for task_id in submitted:
                     async with self.engine.begin() as conn:
                         await self._process(conn, task_id)
+                # After the results, so a task that waited on one of them is
+                # released in the same turn, and no result waits for the sweep.
+                async with self.engine.begin() as conn:
+                    await self.settle_waiting(conn)
 
                 # The goal check reads every current fact, so it runs at most
                 # every GOAL_CHECK_SECONDS and not after every result.
@@ -321,6 +327,19 @@ class Coordinator:
         )
         return [(t, i) for t, i in (await conn.execute(q)).all()]
 
+    async def now(self, conn: AsyncConnection) -> datetime:
+        """The database's clock (db_now), read at most once every
+        CLOCK_READ_SECONDS and carried forward on this process's monotonic
+        clock in between, so every time a task is compared against still comes
+        from Postgres, without a round trip for every decision. Our own clock is
+        read after the database's, so what we carry forward is behind it by at
+        most one round trip and never ahead, and time never goes backwards."""
+        if self._clock is None or time.monotonic() - self._clock[1] > CLOCK_READ_SECONDS:
+            read = await db_now(conn)
+            self._clock = (read, time.monotonic())
+            return read
+        return self._clock[0] + timedelta(seconds=time.monotonic() - self._clock[1])
+
     async def mark_split(self, conn: AsyncConnection, task: Row, reason: str) -> None:
         await conn.execute(update(tasks).where(tasks.c.id == task.id).values(status="split"))
         await self.decide(conn, task, "split", reason)
@@ -346,7 +365,7 @@ class Coordinator:
             return
         if kind not in PERMANENT_ERRORS and task.attempt < task.max_attempts:
             backoff = timedelta(seconds=BACKOFF_BASE_SECONDS * 2**task.attempt)
-            not_before = probe_at or await db_now(conn) + backoff
+            not_before = probe_at or await self.now(conn) + backoff
             await conn.execute(
                 update(tasks)
                 .where(tasks.c.id == task.id)
@@ -394,7 +413,7 @@ class Coordinator:
             return await self.decide(conn, task, "replan", "report failed; session failed")
         delay = NEW_ROUND_DELAY_SECONDS
         if probe_at is not None:
-            delay = max(delay, (probe_at - await db_now(conn)).total_seconds())
+            delay = max(delay, (probe_at - await self.now(conn)).total_seconds())
         await self.domain.replan(self, conn, task, kind, delay, probe=probe_at is not None)
         await self._settle_replacement(conn, task)
 
@@ -473,7 +492,7 @@ class Coordinator:
                 until = datetime.fromisoformat(breaker.value["open_until"])
                 if not probe:
                     until += timedelta(seconds=BREAKER_COOLDOWN_SECONDS)
-                delay = max(delay, (until - await db_now(conn)).total_seconds())
+                delay = max(delay, (until - await self.now(conn)).total_seconds())
         deps = [(d, True) for d in needs] + [(d, False) for d in after if d not in needs]
         new = await create_task(
             conn, self.sid, self.domain, task_type, inp, parent, delay, self.session.partitions,
@@ -505,7 +524,7 @@ class Coordinator:
             value = {"state": "closed", "failures": failures, "open_until": None}
             await crud.upsert_fact(conn, self.sid, subject, BREAKER, value, source_task_id=task.id)
             return None
-        until = await db_now(conn) + timedelta(seconds=BREAKER_COOLDOWN_SECONDS)
+        until = await self.now(conn) + timedelta(seconds=BREAKER_COOLDOWN_SECONDS)
         value = {"state": "open", "failures": failures, "open_until": until.isoformat()}
         await crud.upsert_fact(conn, self.sid, subject, BREAKER, value, source_task_id=task.id)
         # Hold back everything else waiting for this resource.
@@ -639,7 +658,7 @@ class Coordinator:
         if task is not None and task.status == "submitted" and task.submitted_at is not None:
             # How long the result waited for the coordinator, which is what
             # grows first when one coordinator can't keep up.
-            payload["latency_ms"] = round((await db_now(conn) - task.submitted_at).total_seconds() * 1000)
+            payload["latency_ms"] = round((await self.now(conn) - task.submitted_at).total_seconds() * 1000)
         task_id, attempt = (task.id, task.attempt) if task else (None, None)
         await crud.log_event(conn, self.sid, ACTOR, "decision", payload, task_id, attempt)
 

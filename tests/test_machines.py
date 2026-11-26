@@ -94,6 +94,27 @@ async def test_a_backoff_is_timed_by_the_database_clock(engine, monkeypatch):
     assert 0 < wait < 60
 
 
+async def test_the_database_clock_is_read_once_a_second_and_carried_forward(engine, monkeypatch):
+    """A decision costs no round trip for the time, which still comes from Postgres."""
+    sid = await new_session(engine)
+    coord = Coordinator(engine, sid, quiet=True)
+    await coord.load()
+    reads = []
+    real = coordinator_module.db_now
+
+    async def counted(conn):
+        reads.append(1)
+        return await real(conn)
+
+    monkeypatch.setattr(coordinator_module, "db_now", counted)
+    async with engine.connect() as conn:
+        first = await coord.now(conn)
+        second = await coord.now(conn)
+        assert len(reads) == 1 and first <= second < first + timedelta(seconds=1)
+        coord._clock = (coord._clock[0], coord._clock[1] - 2.0)  # as if two seconds went by
+        assert await coord.now(conn) > second and len(reads) == 2
+
+
 async def test_a_resume_releases_only_the_leases_of_its_own_machine(engine):
     sid = await new_session(engine, home_machine="alpha")
     names = {"alpha": "alpha-0001/discovery-1", "beta": "beta-0002/discovery-1", "old": "discovery-1"}

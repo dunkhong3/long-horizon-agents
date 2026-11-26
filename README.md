@@ -53,7 +53,7 @@ The two things this project goes deep on are state and context management, and f
 
 We also measured the design against a naive agent whose prompt is its whole history, on the same worlds with the same faults (`lha/baseline.py`, `lha/bench.py`). At 60 hosts the system's prompts average about 440 tokens and never go over its 1600-token limit, while the naive agent's average about 7,300 and grow with every step, so a run sends about 8 times more tokens, and the naive agent names a decoy in every run unless it re-reads a mismatch, and even then, once its history has to fit a 2000-token window, it loses track of its work and runs out of steps in 8 runs out of 10. The numbers and their limits are in 'The benchmark' in [docs/design.md](docs/design.md).
 
-At scale, a world of 200 hosts finishes the 'find all drifts' goal in about 23 s with 8+8 workers against about 44 s with 2+2, and splitting the plan between 4 coordinators cuts the time a result waits for its decision from about 370 ms to about 60 ms at the median (`lha/scale.py`, and 'Limits and scaling' in the design doc).
+At scale, a world of 200 hosts finishes the 'find all drifts' goal in about 28 s with 8+8 workers against about 43 s with 2+2, and splitting the plan between 4 coordinators cuts the time a result waits for its decision from about 730 ms to about 70 ms at the median (`lha/scale.py`, and 'Limits and scaling' in the design doc).
 
 ## How to run it
 

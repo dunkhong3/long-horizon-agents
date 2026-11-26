@@ -65,6 +65,7 @@ REAL_MAX_SECONDS = 3 * 3600  # the same for a real model, whose money budget usu
 POLL_SECONDS = 0.05  # how often to look for work when polling (--poll)
 IDLE_MAX_SECONDS = 1.0  # the longest a worker waits for a notification before looking anyway
 COORDINATOR_IDLE_SECONDS = 0.5  # the same for a coordinator, which also sweeps leases
+CLOCK_READ_SECONDS = 1.0  # how long a coordinator carries the database's time forward on its own clock
 GOAL_CHECK_SECONDS = 0.5  # how often the leader checks the goal, the budget and stalls
 ALL_DRIFTS = 3  # drifts planted for the 'find all drifts' goal
 
